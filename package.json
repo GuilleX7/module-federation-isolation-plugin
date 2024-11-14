@@ -1,0 +1,20 @@
+{
+  "name": "module-federation-isolation-plugin",
+  "version": "0.0.1-indev.0",
+  "description": "Implementing isolation of shared dependencies for Module Federation",
+  "author": "Guillermo Diz <guillermox7@gmail.com>",
+  "main": "dist/ModuleFederationIsolationPlugin.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/semver": "^7.0.0",
+    "typescript": "^5.0.0",
+    "webpack": "^5.0.0"
+  },
+  "peerDependencies": {
+    "semver": "^7.0.0"
+  }
+}
