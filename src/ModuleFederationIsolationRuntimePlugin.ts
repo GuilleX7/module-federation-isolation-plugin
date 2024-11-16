@@ -107,17 +107,10 @@ type ExtendedFederationHost = {
 }
 
 interface WebpackRequirePatcher {
-  (
-    ownRequire: WebpackRequire,
-    originalOriginRequire: WebpackRequire,
-    isolationNamespace: string,
-  ): WebpackRequire
+  (ownRequire: WebpackRequire, originalOriginRequire: WebpackRequire, isolationNamespace: string): WebpackRequire
 }
 
-function patchModuleFactory(
-  moduleFactory: WebpackModuleFactory,
-  patchedRequire: WebpackRequire,
-): WebpackModuleFactory {
+function patchModuleFactory(moduleFactory: WebpackModuleFactory, patchedRequire: WebpackRequire): WebpackModuleFactory {
   return new Proxy(moduleFactory, {
     apply(target, thisArg, args) {
       const [moduleArg, exportsArg] = args
@@ -161,7 +154,11 @@ function initiateRuntimeManifestIfPresent(ownRequire: WebpackRequire): void {
           packageData[1][modulePath] = moduleId
         }
 
-        midToUid[moduleId] = { pkgName: packageName, pkgVersion: packageVersion, modulePath }
+        midToUid[moduleId] = {
+          pkgName: packageName,
+          pkgVersion: packageVersion,
+          modulePath,
+        }
       })
     })
   })
@@ -171,7 +168,7 @@ function updateSharedModuleRedirections(
   runtimeManifest: RuntimeManifest,
   pkgName: string,
   pkgVersion: string,
-  newRedirection: RuntimeSharedModuleRedirection | null,
+  newRedirection: RuntimeSharedModuleRedirection | null
 ): void {
   Object.entries(runtimeManifest.red).forEach(([moduleId, redirectionData]) => {
     if (!redirectionData || redirectionData.originRequire) {
@@ -190,7 +187,7 @@ function updateSharedModuleRedirections(
 function createIsolationRequire(
   ownRequire: WebpackRequire,
   originalOriginRequire: WebpackRequire,
-  isolationNamespace: string,
+  isolationNamespace: string
 ): WebpackRequire {
   return new Proxy(originalOriginRequire, {
     apply(_, thisArg, args) {
@@ -218,7 +215,7 @@ function createIsolationRequire(
       // Module is not in cache, create a new module instance
       originRequire.m[isolatedModuleId] = patchModuleFactory(
         originRequire.m[originModuleId],
-        createIsolationRequire(ownRequire, originRequire, isolationNamespace),
+        createIsolationRequire(ownRequire, originRequire, isolationNamespace)
       )
       originRequire.apply(thisArg, [isolatedModuleId])
 
@@ -236,7 +233,7 @@ function createIsolationRequire(
 function createTranslationRequire(
   ownRequire: WebpackRequire,
   originalOriginRequire: WebpackRequire,
-  isolationNamespace: string,
+  isolationNamespace: string
 ): WebpackRequire {
   return new Proxy(originalOriginRequire, {
     apply(_, thisArg, args) {
@@ -258,14 +255,12 @@ function createTranslationRequire(
         const originPackageUniversalId = `${originUniversalModule.pkgName}~${originUniversalModule.pkgVersion}`
         const originHostName = originRequire.federation.isolation.hostName
 
-        let ownPackageVersion =
-          ownRequire.federation.isolation.pkgMatch[originHostName]?.[originPackageUniversalId]
+        let ownPackageVersion = ownRequire.federation.isolation.pkgMatch[originHostName]?.[originPackageUniversalId]
 
         if (ownPackageVersion === undefined) {
           ownPackageVersion =
-            ownRequire.federation.isolation.pkgVersions[originUniversalModule.pkgName]?.find(
-              ([, rangesIn]) =>
-                rangesIn.every((range) => semverSatisfies(originUniversalModule.pkgVersion, range)),
+            ownRequire.federation.isolation.pkgVersions[originUniversalModule.pkgName]?.find(([, rangesIn]) =>
+              rangesIn.every((range) => semverSatisfies(originUniversalModule.pkgVersion, range))
             )?.[0] ?? null
 
           ownRequire.federation.isolation.pkgMatch[originHostName] = {
@@ -276,9 +271,9 @@ function createTranslationRequire(
 
         if (ownPackageVersion !== null) {
           ownModuleId =
-            ownRequire.federation.isolation.pkg[originUniversalModule.pkgName][
-              ownPackageVersion
-            ][1][originUniversalModule.modulePath]
+            ownRequire.federation.isolation.pkg[originUniversalModule.pkgName][ownPackageVersion][1][
+              originUniversalModule.modulePath
+            ]
         }
       }
 
@@ -298,7 +293,7 @@ function createTranslationRequire(
       // Module is not in cache, create a new module instance
       originRequire.m[isolatedModuleId] = patchModuleFactory(
         originRequire.m[originModuleId],
-        createTranslationRequire(ownRequire, originRequire, isolationNamespace),
+        createTranslationRequire(ownRequire, originRequire, isolationNamespace)
       )
       originRequire.apply(thisArg, [isolatedModuleId])
 
@@ -313,9 +308,7 @@ function createTranslationRequire(
   })
 }
 
-export function createMfiRuntimePlugin(
-  options: RuntimePluginOptions,
-): () => FederationRuntimePlugin {
+export function createMfiRuntimePlugin(options: RuntimePluginOptions): () => FederationRuntimePlugin {
   return function plugin(): FederationRuntimePlugin {
     const ownRequire = __webpack_require__
 
@@ -331,7 +324,7 @@ export function createMfiRuntimePlugin(
           ownHost.__webpack_require__ = ownRequire
         } else if (ownHost.__webpack_require__ !== ownRequire) {
           console.warn(
-            `[${PLUGIN_NAME}] The __webpack_require__ function of the host ${ownHost.name} is already set. This may lead to unexpected behavior.`,
+            `[${PLUGIN_NAME}] The __webpack_require__ function of the host ${ownHost.name} is already set. This may lead to unexpected behavior.`
           )
         }
         // Save the host name in the manifest
@@ -367,48 +360,29 @@ export function createMfiRuntimePlugin(
             })
             .then((originalFactory) => {
               const originHost = args.GlobalFederation.__INSTANCES__.find(
-                (instance) => instance.name === resolvedDependency.from,
+                (instance) => instance.name === resolvedDependency.from
               ) as ExtendedFederationHost
 
               if (!originHost) {
-                console.warn(
-                  `[${PLUGIN_NAME}] Could not find host named ${resolvedDependency.from}`,
-                )
-                updateSharedModuleRedirections(
-                  ownRequire.federation.isolation,
-                  pkgName,
-                  pkgVersion,
-                  null,
-                )
+                console.warn(`[${PLUGIN_NAME}] Could not find host named ${resolvedDependency.from}`)
+                updateSharedModuleRedirections(ownRequire.federation.isolation, pkgName, pkgVersion, null)
                 return originalFactory
               } else if (!originHost.__webpack_require__) {
-                console.warn(
-                  `[${PLUGIN_NAME}] Host ${resolvedDependency.from} is not using ${PLUGIN_NAME}`,
-                )
-                updateSharedModuleRedirections(
-                  ownRequire.federation.isolation,
-                  pkgName,
-                  pkgVersion,
-                  null,
-                )
+                console.warn(`[${PLUGIN_NAME}] Host ${resolvedDependency.from} is not using ${PLUGIN_NAME}`)
+                updateSharedModuleRedirections(ownRequire.federation.isolation, pkgName, pkgVersion, null)
                 return originalFactory
               }
 
               const originRequire = originHost.__webpack_require__
               const originModuleInstance = originalFactory()
               const originModuleId = Object.entries(originRequire.c).find(
-                ([, { exports }]) => exports === originModuleInstance,
+                ([, { exports }]) => exports === originModuleInstance
               )?.[0]
               if (!originModuleId) {
                 console.warn(
-                  `[ModuleFederationIsolationRuntime] Could not find the module ID for the ${pkgName} entrypoint in the ${resolvedDependency.from} host cache`,
+                  `[ModuleFederationIsolationRuntime] Could not find the module ID for the ${pkgName} entrypoint in the ${resolvedDependency.from} host cache`
                 )
-                updateSharedModuleRedirections(
-                  ownRequire.federation.isolation,
-                  pkgName,
-                  pkgVersion,
-                  null,
-                )
+                updateSharedModuleRedirections(ownRequire.federation.isolation, pkgName, pkgVersion, null)
                 return originalFactory
               }
 
@@ -427,7 +401,7 @@ export function createMfiRuntimePlugin(
               const patchedRequire = createPatchedRequire(
                 ownRequire,
                 originRequire,
-                `mfi/${ownRequire.federation.isolation.hostName}/${pkgName}/${pkgVersion}`,
+                `mfi/${ownRequire.federation.isolation.hostName}/${pkgName}/${pkgVersion}`
               )
               return () => patchedRequire(originModuleId)
             }),

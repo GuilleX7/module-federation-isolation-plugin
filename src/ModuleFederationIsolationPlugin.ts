@@ -1,14 +1,6 @@
 import path from 'path'
 import fs from 'fs'
-import {
-  Compiler,
-  RuntimeGlobals,
-  RuntimeModule,
-  Template,
-  Module,
-  NormalModule,
-  ModuleGraph,
-} from 'webpack'
+import { Compiler, RuntimeGlobals, RuntimeModule, Template, Module, NormalModule, ModuleGraph } from 'webpack'
 import { validate } from 'schema-utils'
 import semverSatisfies from 'semver/functions/satisfies'
 
@@ -114,15 +106,12 @@ class ModuleFederationIsolationInfoModule extends RuntimeModule {
     const sizeOptimizedManifest: SizeOptimizedManifest = {
       pre: [],
       pkg: {},
-      red: Object.entries(manifest.sharedModuleRedirections).reduce(
-        (acc, [moduleId, redirection]) => {
-          acc[moduleId] = {
-            mid: redirection.moduleIdToRedirectTo,
-          }
-          return acc
-        },
-        {} as Record<WebpackModuleId, SizeOptimizedSharedModuleRedirection>,
-      ),
+      red: Object.entries(manifest.sharedModuleRedirections).reduce((acc, [moduleId, redirection]) => {
+        acc[moduleId] = {
+          mid: redirection.moduleIdToRedirectTo,
+        }
+        return acc
+      }, {} as Record<WebpackModuleId, SizeOptimizedSharedModuleRedirection>),
     }
 
     const rawManifestPrefixes = sizeOptimizedManifest.pre
@@ -137,25 +126,23 @@ class ModuleFederationIsolationInfoModule extends RuntimeModule {
       for (const version of Object.keys(packageVersions)) {
         const minifiedModulePathToModuleId: Record<string, WebpackModuleId> = {}
 
-        Object.entries(packageVersions[version].modulePathToModuleId).forEach(
-          ([modulePath, moduleId]) => {
-            const modulePathNoLoaderNoQuery = modulePath.split(/[!?]/)[0]
-            const lastSlashIndex = modulePathNoLoaderNoQuery.lastIndexOf('/')
-            if (lastSlashIndex === -1) {
-              minifiedModulePathToModuleId[modulePath] = moduleId
-              return
-            }
+        Object.entries(packageVersions[version].modulePathToModuleId).forEach(([modulePath, moduleId]) => {
+          const modulePathNoLoaderNoQuery = modulePath.split(/[!?]/)[0]
+          const lastSlashIndex = modulePathNoLoaderNoQuery.lastIndexOf('/')
+          if (lastSlashIndex === -1) {
+            minifiedModulePathToModuleId[modulePath] = moduleId
+            return
+          }
 
-            const prefix = modulePath.slice(0, lastSlashIndex)
-            const suffix = modulePath.slice(lastSlashIndex + 1)
-            if (!prefixToIndex[prefix]) {
-              prefixToIndex[prefix] = rawManifestPrefixes.length
-              rawManifestPrefixes.push(prefix)
-            }
+          const prefix = modulePath.slice(0, lastSlashIndex)
+          const suffix = modulePath.slice(lastSlashIndex + 1)
+          if (!prefixToIndex[prefix]) {
+            prefixToIndex[prefix] = rawManifestPrefixes.length
+            rawManifestPrefixes.push(prefix)
+          }
 
-            minifiedModulePathToModuleId[`${prefixToIndex[prefix]}/${suffix}`] = moduleId
-          },
-        )
+          minifiedModulePathToModuleId[`${prefixToIndex[prefix]}/${suffix}`] = moduleId
+        })
 
         rawManifestPackages[packageName][version] = [
           packageVersions[version].semverRangesIn,
@@ -216,30 +203,22 @@ export class ModuleFederationIsolationPlugin {
   }
 
   createRuntimePlugin(compiler: Compiler): string {
-    const isolationFolderPath = path.resolve(
-      compiler.context,
-      'node_modules',
-      '.federation',
-      'isolation',
-    )
+    const isolationFolderPath = path.resolve(compiler.context, 'node_modules', '.federation', 'isolation')
     fs.mkdirSync(isolationFolderPath, { recursive: true })
 
-    const runtimePluginPath = path.resolve(
-      isolationFolderPath,
-      `mfiruntime${this.remoteEntryIndex}.js`,
-    )
+    const runtimePluginPath = path.resolve(isolationFolderPath, `mfiruntime${this.remoteEntryIndex}.js`)
     fs.writeFileSync(
       runtimePluginPath,
       Template.asString([
         `const { createMfiRuntimePlugin } = require('${path.resolve(
           __dirname,
-          'ModuleFederationIsolationRuntimePlugin',
+          'ModuleFederationIsolationRuntimePlugin'
         )}');`,
         `module.exports = createMfiRuntimePlugin(${JSON.stringify({
           stateStrategy: this.options.stateStrategy,
           sharedDependencies: this.options.sharedDependencies,
         })});`,
-      ]),
+      ])
     )
 
     this.remoteEntryIndex++
@@ -263,8 +242,7 @@ export class ModuleFederationIsolationPlugin {
 
         if (!this.remoteEntriesToApply.size || this.remoteEntriesToApply.has(remoteEntryName)) {
           const runtimePluginPath = this.createRuntimePlugin(compiler)
-          moduleFederationPluginOptions.runtimePlugins =
-            moduleFederationPluginOptions.runtimePlugins || []
+          moduleFederationPluginOptions.runtimePlugins = moduleFederationPluginOptions.runtimePlugins || []
           moduleFederationPluginOptions.runtimePlugins.push(runtimePluginPath)
         }
       }
@@ -312,10 +290,7 @@ export class ModuleFederationIsolationPlugin {
     return packageJsonPath
   }
 
-  getPackageInfo(
-    packageJsonPath: string,
-    packageInfoMap: Record<string, PackageInfo>,
-  ): PackageInfo | undefined {
+  getPackageInfo(packageJsonPath: string, packageInfoMap: Record<string, PackageInfo>): PackageInfo | undefined {
     if (packageInfoMap[packageJsonPath]) {
       return packageInfoMap[packageJsonPath]
     }
@@ -363,7 +338,7 @@ export class ModuleFederationIsolationPlugin {
     moduleGraph: ModuleGraph,
     module: Module,
     modulePackageInfo: PackageInfo,
-    packageInfoMap: Record<string, PackageInfo>,
+    packageInfoMap: Record<string, PackageInfo>
   ): void {
     const dependencies = moduleGraph.getOutgoingConnections(module)
     for (const dependency of dependencies) {
@@ -388,7 +363,7 @@ export class ModuleFederationIsolationPlugin {
       if (dependencyRangeSpecifiedInParentModule) {
         const normalizedDependencyRange = this.getNormalizedDependencyRange(
           dependencyRangeSpecifiedInParentModule,
-          dependencyPackageInfo,
+          dependencyPackageInfo
         )
 
         if (semverSatisfies(dependencyPackageInfo.version, normalizedDependencyRange)) {
@@ -418,7 +393,7 @@ export class ModuleFederationIsolationPlugin {
 
           if (module.constructor.name === 'ConsumeSharedModule') {
             const referencedModule = compilation.moduleGraph.getModule(
-              module.blocks?.[0]?.dependencies?.[0] || module.dependencies?.[0],
+              module.blocks?.[0]?.dependencies?.[0] || module.dependencies?.[0]
             )
             if (!referencedModule || referencedModule.constructor.name !== 'NormalModule') {
               return
@@ -454,10 +429,7 @@ export class ModuleFederationIsolationPlugin {
             return
           }
 
-          const packageInfo = this.getPackageInfo(
-            associatedPackageJsonPath,
-            packageInfoByPackageJsonPath,
-          )
+          const packageInfo = this.getPackageInfo(associatedPackageJsonPath, packageInfoByPackageJsonPath)
           if (!packageInfo) {
             return
           }
@@ -466,7 +438,7 @@ export class ModuleFederationIsolationPlugin {
             compilation.moduleGraph,
             normalModule,
             packageInfo,
-            packageInfoByPackageJsonPath,
+            packageInfoByPackageJsonPath
           )
 
           // We don't want to include modules from the project's package.json
@@ -474,10 +446,7 @@ export class ModuleFederationIsolationPlugin {
             return
           }
 
-          let moduleRelativePath = path.relative(
-            path.dirname(associatedPackageJsonPath),
-            moduleFullPath,
-          )
+          let moduleRelativePath = path.relative(path.dirname(associatedPackageJsonPath), moduleFullPath)
 
           const moduleFullId = normalModule.identifier()
           if (moduleFullId.includes('!')) {
@@ -488,18 +457,12 @@ export class ModuleFederationIsolationPlugin {
                   return null
                 }
 
-                const loaderPackageInfo = this.getPackageInfo(
-                  loaderPackageJsonPath,
-                  packageInfoByPackageJsonPath,
-                )
+                const loaderPackageInfo = this.getPackageInfo(loaderPackageJsonPath, packageInfoByPackageJsonPath)
                 if (!loaderPackageInfo) {
                   return null
                 }
 
-                const loaderModuleRelativePath = path.relative(
-                  path.dirname(loaderPackageJsonPath),
-                  loader.loader,
-                )
+                const loaderModuleRelativePath = path.relative(path.dirname(loaderPackageJsonPath), loader.loader)
                 const loaderOptions = loader.options ? `?${JSON.stringify(loader.options)}` : '!'
                 return `${loaderPackageInfo.name}@${loaderModuleRelativePath}${loaderOptions}`
               })
@@ -524,22 +487,16 @@ export class ModuleFederationIsolationPlugin {
               semverRangesIn: [],
             }
           }
-          if (
-            manifest.packages[packageInfo.name][packageInfo.version].modulePathToModuleId[
-              moduleRelativePath
-            ]
-          ) {
+          if (manifest.packages[packageInfo.name][packageInfo.version].modulePathToModuleId[moduleRelativePath]) {
             compiler
               .getInfrastructureLogger(PLUGIN_NAME)
               .warn(
-                `Module ${moduleRelativePath} from package ${packageInfo.name}@${packageInfo.version} was found duplicated and will be ignored`,
+                `Module ${moduleRelativePath} from package ${packageInfo.name}@${packageInfo.version} was found duplicated and will be ignored`
               )
             return
           }
 
-          manifest.packages[packageInfo.name][packageInfo.version].modulePathToModuleId[
-            moduleRelativePath
-          ] = moduleId
+          manifest.packages[packageInfo.name][packageInfo.version].modulePathToModuleId[moduleRelativePath] = moduleId
         })
 
         Object.values(packageInfoByPackageJsonPath).forEach(({ name, version, rangesIn }) => {
@@ -548,9 +505,7 @@ export class ModuleFederationIsolationPlugin {
             return
           }
 
-          existingEntry.semverRangesIn = [
-            ...new Set([...existingEntry.semverRangesIn, ...rangesIn]),
-          ]
+          existingEntry.semverRangesIn = [...new Set([...existingEntry.semverRangesIn, ...rangesIn])]
         })
       })
 
@@ -558,8 +513,7 @@ export class ModuleFederationIsolationPlugin {
         for (const chunk of chunks) {
           if (
             chunk.hasRuntime() &&
-            (!this.remoteEntriesToApply.size ||
-              (chunk.name && this.remoteEntriesToApply.has(chunk.name)))
+            (!this.remoteEntriesToApply.size || (chunk.name && this.remoteEntriesToApply.has(chunk.name)))
           ) {
             compilation.addRuntimeModule(chunk, new ModuleFederationIsolationInfoModule(manifest))
           }
