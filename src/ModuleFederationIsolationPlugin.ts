@@ -202,6 +202,10 @@ export class ModuleFederationIsolationPlugin {
     }
   }
 
+  normalizePath(filePath: string): string {
+    return filePath.replaceAll(path.sep, path.posix.sep)
+  }
+
   createRuntimePlugin(compiler: Compiler): string {
     const isolationFolderPath = path.resolve(compiler.context, 'node_modules', '.federation', 'isolation')
     fs.mkdirSync(isolationFolderPath, { recursive: true })
@@ -210,9 +214,8 @@ export class ModuleFederationIsolationPlugin {
     fs.writeFileSync(
       runtimePluginPath,
       Template.asString([
-        `const { createMfiRuntimePlugin } = require('${path.resolve(
-          __dirname,
-          'ModuleFederationIsolationRuntimePlugin'
+        `const { createMfiRuntimePlugin } = require('${this.normalizePath(
+          path.resolve(__dirname, 'ModuleFederationIsolationRuntimePlugin')
         )}');`,
         `module.exports = createMfiRuntimePlugin(${JSON.stringify({
           stateStrategy: this.options.stateStrategy,
@@ -276,7 +279,7 @@ export class ModuleFederationIsolationPlugin {
     while (currentRelativeDir !== '.') {
       const possiblePackageJsonPath = path.join(currentRelativeDir, 'package.json')
       if (fs.existsSync(possiblePackageJsonPath)) {
-        packageJsonPath = possiblePackageJsonPath
+        packageJsonPath = this.normalizePath(possiblePackageJsonPath)
         break
       } else {
         const nextRelativeDir = path.dirname(currentRelativeDir)
@@ -348,10 +351,11 @@ export class ModuleFederationIsolationPlugin {
       }
 
       const normalModule = dependencyModule as NormalModule
-      const dependencyPackageJsonPath = normalModule.resourceResolveData?.descriptionFilePath
+      let dependencyPackageJsonPath = normalModule.resourceResolveData?.descriptionFilePath
       if (!dependencyPackageJsonPath) {
         continue
       }
+      dependencyPackageJsonPath = this.normalizePath(dependencyPackageJsonPath)
 
       const dependencyPackageInfo = this.getPackageInfo(dependencyPackageJsonPath, packageInfoMap)
       if (!dependencyPackageInfo) {
@@ -383,6 +387,7 @@ export class ModuleFederationIsolationPlugin {
         sharedModuleRedirections: {},
       }
       const packageInfoByPackageJsonPath: Record<string, PackageInfo> = {}
+      const rootProjectPackageJsonPath = this.normalizePath(path.join(compiler.context, 'package.json'))
 
       compilation.hooks.afterOptimizeModuleIds.tap(PLUGIN_NAME, () => {
         compilation.modules.forEach((module) => {
@@ -424,6 +429,7 @@ export class ModuleFederationIsolationPlugin {
             return
           }
 
+          // Hint: we don't use `normalModule.resourceResolveData.descriptionFilePath` here because it's not reliable to determine relative paths
           const associatedPackageJsonPath = this.getPackageJsonPathForModulePath(moduleFullPath)
           if (!associatedPackageJsonPath) {
             return
@@ -442,11 +448,13 @@ export class ModuleFederationIsolationPlugin {
           )
 
           // We don't want to include modules from the project's package.json
-          if (associatedPackageJsonPath === path.join(compiler.context, 'package.json')) {
+          if (associatedPackageJsonPath === rootProjectPackageJsonPath) {
             return
           }
 
-          let moduleRelativePath = path.relative(path.dirname(associatedPackageJsonPath), moduleFullPath)
+          let moduleRelativePath = this.normalizePath(
+            path.relative(path.dirname(associatedPackageJsonPath), moduleFullPath)
+          )
 
           const moduleFullId = normalModule.identifier()
           if (moduleFullId.includes('!')) {
@@ -462,7 +470,9 @@ export class ModuleFederationIsolationPlugin {
                   return null
                 }
 
-                const loaderModuleRelativePath = path.relative(path.dirname(loaderPackageJsonPath), loader.loader)
+                const loaderModuleRelativePath = this.normalizePath(
+                  path.relative(path.dirname(loaderPackageJsonPath), loader.loader)
+                )
                 const loaderOptions = loader.options ? `?${JSON.stringify(loader.options)}` : '!'
                 return `${loaderPackageInfo.name}@${loaderModuleRelativePath}${loaderOptions}`
               })
