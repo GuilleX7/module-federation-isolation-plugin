@@ -397,9 +397,12 @@ export class ModuleFederationIsolationPlugin {
           }
 
           if (module.constructor.name === 'ConsumeSharedModule') {
-            const referencedModule = compilation.moduleGraph.getModule(
-              module.blocks?.[0]?.dependencies?.[0] || module.dependencies?.[0]
-            )
+            const referencedDependency = module.blocks?.[0]?.dependencies?.[0] || module.dependencies?.[0]
+            if (!referencedDependency) {
+              return
+            }
+
+            const referencedModule = compilation.moduleGraph.getModule(referencedDependency)
             if (!referencedModule || referencedModule.constructor.name !== 'NormalModule') {
               return
             }
