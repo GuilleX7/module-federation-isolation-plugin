@@ -1,6 +1,15 @@
 import path from 'path'
 import fs from 'fs'
-import { Compiler, RuntimeGlobals, RuntimeModule, Template, Module, NormalModule, ModuleGraph } from 'webpack'
+import {
+  Compiler,
+  RuntimeGlobals,
+  RuntimeModule,
+  Template,
+  Module,
+  NormalModule,
+  ModuleGraph,
+  Compilation,
+} from 'webpack'
 import { validate } from 'schema-utils'
 import semverSatisfies from 'semver/functions/satisfies'
 
@@ -45,11 +54,11 @@ type Manifest = {
       }
     >
   >
-  sharedModuleRedirections: Record<WebpackModuleId, ManifestSharedModuleRedirection>
+  consumeSharedRedirection: Record<WebpackModuleId, ManifestConsumeSharedRedirection>
 }
 
-type ManifestSharedModuleRedirection = {
-  moduleIdToRedirectTo: WebpackModuleId
+type ManifestConsumeSharedRedirection = {
+  providedModuleId: WebpackModuleId | null
 }
 
 export type WebpackModuleId = string | number
@@ -61,7 +70,7 @@ export type SizeOptimizedManifest = {
 }
 
 export type SizeOptimizedSharedModuleRedirection = {
-  mid: WebpackModuleId
+  mid: WebpackModuleId | null
 }
 
 const PLUGIN_OPTIONS_SCHEMA = {
@@ -97,7 +106,7 @@ const instanceStateStrategyPriority: Record<StateStrategy, number> = {
 }
 
 class ModuleFederationIsolationInfoModule extends RuntimeModule {
-  constructor(private manifest: Manifest) {
+  constructor(private readonly manifest: Manifest) {
     super('mf isolation runtime', RuntimeModule.STAGE_ATTACH)
   }
 
@@ -106,9 +115,9 @@ class ModuleFederationIsolationInfoModule extends RuntimeModule {
     const sizeOptimizedManifest: SizeOptimizedManifest = {
       pre: [],
       pkg: {},
-      red: Object.entries(manifest.sharedModuleRedirections).reduce((acc, [moduleId, redirection]) => {
+      red: Object.entries(manifest.consumeSharedRedirection).reduce((acc, [moduleId, redirection]) => {
         acc[moduleId] = {
-          mid: redirection.moduleIdToRedirectTo,
+          mid: redirection.providedModuleId,
         }
         return acc
       }, {} as Record<WebpackModuleId, SizeOptimizedSharedModuleRedirection>),
@@ -165,8 +174,8 @@ class ModuleFederationIsolationInfoModule extends RuntimeModule {
 }
 
 export class ModuleFederationIsolationPlugin {
-  private options: PluginOptions
-  private remoteEntriesToApply: Set<string> = new Set()
+  private readonly options: PluginOptions
+  private readonly remoteEntriesToApply: Set<string> = new Set()
   private remoteEntryIndex = 0
 
   constructor(userOptions: Partial<PluginOptions> = {}) {
@@ -380,11 +389,59 @@ export class ModuleFederationIsolationPlugin {
     }
   }
 
+  getProvidedModuleIdForConsumeSharedModule(
+    consumeSharedModule: Module,
+    compilation: Compilation
+  ): WebpackModuleId | null {
+    const referencedDependency =
+      consumeSharedModule.blocks?.[0]?.dependencies?.[0] || consumeSharedModule.dependencies?.[0]
+    if (!referencedDependency) {
+      return null
+    }
+
+    const referencedModule = compilation.moduleGraph.getModule(referencedDependency)
+    if (!referencedModule || referencedModule.constructor.name !== 'NormalModule') {
+      return null
+    }
+
+    return compilation.chunkGraph.getModuleId(referencedModule)
+  }
+
+  getLoaderQueryForNormalModule(
+    normalModule: NormalModule,
+    packageInfoByPackageJsonPath: Record<string, PackageInfo>
+  ): string {
+    return (
+      normalModule.loaders
+        .map((loader) => {
+          const loaderPackageJsonPath = this.getPackageJsonPathForModulePath(loader.loader)
+          if (!loaderPackageJsonPath) {
+            return null
+          }
+
+          const loaderPackageInfo = this.getPackageInfo(loaderPackageJsonPath, packageInfoByPackageJsonPath)
+          if (!loaderPackageInfo) {
+            return null
+          }
+
+          const loaderModuleRelativePath = this.normalizePath(
+            path.relative(path.dirname(loaderPackageJsonPath), loader.loader)
+          )
+          const loaderOptions = loader.options ? `?${JSON.stringify(loader.options)}` : '!'
+          return `${loaderPackageInfo.name}@${loaderModuleRelativePath}${loaderOptions}`
+        })
+        .filter(Boolean)
+        // Hint: using question mark instead of exclamation unifies the query string
+        // and allows easier splitting at runtime
+        .join('?')
+    )
+  }
+
   gatherModuleInfoAndAttachToRuntime(compiler: Compiler): void {
     compiler.hooks.compilation.tap(PLUGIN_NAME, (compilation) => {
       const manifest: Manifest = {
         packages: {},
-        sharedModuleRedirections: {},
+        consumeSharedRedirection: {},
       }
       const packageInfoByPackageJsonPath: Record<string, PackageInfo> = {}
       const rootProjectPackageJsonPath = this.normalizePath(path.join(compiler.context, 'package.json'))
@@ -397,23 +454,8 @@ export class ModuleFederationIsolationPlugin {
           }
 
           if (module.constructor.name === 'ConsumeSharedModule') {
-            const referencedDependency = module.blocks?.[0]?.dependencies?.[0] || module.dependencies?.[0]
-            if (!referencedDependency) {
-              return
-            }
-
-            const referencedModule = compilation.moduleGraph.getModule(referencedDependency)
-            if (!referencedModule || referencedModule.constructor.name !== 'NormalModule') {
-              return
-            }
-
-            const referencedModuleId = compilation.chunkGraph.getModuleId(referencedModule)
-            if (referencedModuleId === null) {
-              return
-            }
-
-            manifest.sharedModuleRedirections[moduleId] = {
-              moduleIdToRedirectTo: referencedModuleId,
+            manifest.consumeSharedRedirection[moduleId] = {
+              providedModuleId: this.getProvidedModuleIdForConsumeSharedModule(module, compilation),
             }
             return
           }
@@ -461,29 +503,8 @@ export class ModuleFederationIsolationPlugin {
 
           const moduleFullId = normalModule.identifier()
           if (moduleFullId.includes('!')) {
-            const loaderQuery = normalModule.loaders
-              .map((loader) => {
-                const loaderPackageJsonPath = this.getPackageJsonPathForModulePath(loader.loader)
-                if (!loaderPackageJsonPath) {
-                  return null
-                }
-
-                const loaderPackageInfo = this.getPackageInfo(loaderPackageJsonPath, packageInfoByPackageJsonPath)
-                if (!loaderPackageInfo) {
-                  return null
-                }
-
-                const loaderModuleRelativePath = this.normalizePath(
-                  path.relative(path.dirname(loaderPackageJsonPath), loader.loader)
-                )
-                const loaderOptions = loader.options ? `?${JSON.stringify(loader.options)}` : '!'
-                return `${loaderPackageInfo.name}@${loaderModuleRelativePath}${loaderOptions}`
-              })
-              .filter(Boolean)
-
-            // Hint: using question mark instead of exclamation unifies the query string
-            // and allows easier splitting
-            moduleRelativePath = `${moduleRelativePath}?${loaderQuery.join('?')}`
+            const loaderQuery = this.getLoaderQueryForNormalModule(normalModule, packageInfoByPackageJsonPath)
+            moduleRelativePath = `${moduleRelativePath}?${loaderQuery}`
           }
 
           if (normalModule.resourceResolveData?.query) {
