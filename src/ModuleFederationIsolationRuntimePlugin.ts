@@ -24,9 +24,7 @@ declare global {
   let __webpack_modules__: Record<WebpackModuleId, WebpackModuleFactory>
 }
 
-interface WebpackModuleFactory<T = unknown> {
-  (this: T, module: WebpackModule, exports: T, require: WebpackRequire): T
-}
+type WebpackModuleFactory<T = unknown> = (this: T, module: WebpackModule, exports: T, require: WebpackRequire) => T
 
 type WebpackModule<T = unknown> = {
   id: WebpackModuleId
@@ -85,9 +83,7 @@ interface FederationRuntimeSharedConfig {
   strictVersion?: boolean
 }
 
-interface FederationRuntimeDependencyLib {
-  (): WebpackModule['exports']
-}
+type FederationRuntimeDependencyLib = () => WebpackModule['exports']
 
 interface FederationRuntimeDependencyGetter {
   (): Promise<FederationRuntimeDependencyLib>
@@ -149,9 +145,11 @@ type ExtendedFederationHost = {
   __webpack_require__: WebpackRequire
 }
 
-interface WebpackRequirePatcher {
-  (ownRequire: WebpackRequire, originalOriginRequire: WebpackRequire, isolationNamespace: string): WebpackRequire
-}
+type WebpackRequirePatcher = (
+  ownRequire: WebpackRequire,
+  originalOriginRequire: WebpackRequire,
+  isolationNamespace: string
+) => WebpackRequire
 
 function patchModuleFactory(moduleFactory: WebpackModuleFactory, patchedRequire: WebpackRequire): WebpackModuleFactory {
   return new Proxy(moduleFactory, {
@@ -270,7 +268,7 @@ function createTranslationRequire(
         originRequire = possibleRedirection.webpackRequire
       }
 
-      let ownModuleId: WebpackModuleId | undefined = undefined
+      let ownModuleId: WebpackModuleId | null = null
 
       const originUniversalModule = originRequire.federation.isolation.midToUid[originModuleId]
 
@@ -300,13 +298,12 @@ function createTranslationRequire(
         }
       }
 
-      if (ownModuleId && ownRequire.c[ownModuleId]) {
+      if (ownModuleId !== null && ownRequire.c[ownModuleId]) {
         // Module is already instantiated and copied to the own cache
         return ownRequire.c[ownModuleId].exports
       }
 
       const isolatedModuleId: WebpackModuleId = `${isolationNamespace}/${originModuleId}`
-      ownModuleId = ownModuleId ?? isolatedModuleId
 
       if (originRequire.c[isolatedModuleId]) {
         // Module is still instantiating in the originRequire cache
@@ -321,6 +318,7 @@ function createTranslationRequire(
       originRequire.apply(thisArg, [isolatedModuleId])
 
       // Move instantiated module and clean up the origin cache
+      ownModuleId = ownModuleId ?? isolatedModuleId
       ownRequire.c[ownModuleId] = originRequire.c[isolatedModuleId]
       if (ownRequire !== originRequire) {
         delete originRequire.c[isolatedModuleId]
