@@ -206,7 +206,7 @@ function createIsolationRequire(
   isolationNamespace: string
 ): WebpackRequire {
   return new Proxy(originalOriginRequire, {
-    apply(_, thisArg, args: [WebpackModuleId]) {
+    apply(_, __, args: [WebpackModuleId]) {
       let [originModuleId] = args
       let originRequire = originalOriginRequire
 
@@ -233,7 +233,7 @@ function createIsolationRequire(
         originRequire.m[originModuleId],
         createIsolationRequire(ownRequire, originRequire, isolationNamespace)
       )
-      originRequire.apply(thisArg, [isolatedModuleId])
+      originRequire(isolatedModuleId)
 
       // Move instantiated module and clean up the origin cache
       ownRequire.c[isolatedModuleId] = originRequire.c[isolatedModuleId]
@@ -252,7 +252,7 @@ function createTranslationRequire(
   isolationNamespace: string
 ): WebpackRequire {
   return new Proxy(originalOriginRequire, {
-    apply(_, thisArg, args: [WebpackModuleId]) {
+    apply(_, __, args: [WebpackModuleId]) {
       let [originModuleId] = args
       let originRequire = originalOriginRequire
 
@@ -310,7 +310,7 @@ function createTranslationRequire(
         originRequire.m[originModuleId],
         createTranslationRequire(ownRequire, originRequire, isolationNamespace)
       )
-      originRequire.apply(thisArg, [isolatedModuleId])
+      originRequire(isolatedModuleId)
 
       // Move instantiated module and clean up the origin cache
       ownModuleId = ownModuleId ?? isolatedModuleId
