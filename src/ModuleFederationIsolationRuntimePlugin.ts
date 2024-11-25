@@ -151,15 +151,6 @@ type WebpackRequirePatcher = (
   isolationNamespace: string
 ) => WebpackRequire
 
-function patchModuleFactory(moduleFactory: WebpackModuleFactory, patchedRequire: WebpackRequire): WebpackModuleFactory {
-  return new Proxy(moduleFactory, {
-    apply(target, thisArg, args) {
-      const [moduleArg, exportsArg] = args
-      return target.apply(thisArg, [moduleArg, exportsArg, patchedRequire])
-    },
-  })
-}
-
 function initiateRuntimeManifestIfPresent(ownRequire: WebpackRequire): void {
   if (!ownRequire.federation.isolation || ownRequire.federation.isolation.initiated) {
     return
@@ -203,6 +194,10 @@ function initiateRuntimeManifestIfPresent(ownRequire: WebpackRequire): void {
       })
     })
   })
+}
+
+function patchModuleFactory(moduleFactory: WebpackModuleFactory, patchedRequire: WebpackRequire): WebpackModuleFactory {
+  return (module: WebpackModule, exports: WebpackModule['exports']) => moduleFactory(module, exports, patchedRequire)
 }
 
 function createIsolationRequire(
