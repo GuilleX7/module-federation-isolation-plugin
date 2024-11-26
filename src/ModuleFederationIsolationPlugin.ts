@@ -404,12 +404,8 @@ export class ModuleFederationIsolationPlugin {
     }
   }
 
-  getProvidedModuleIdForConsumeSharedModule(
-    consumeSharedModule: Module,
-    compilation: Compilation
-  ): WebpackModuleId | null {
-    const referencedDependency =
-      consumeSharedModule.blocks?.[0]?.dependencies?.[0] || consumeSharedModule.dependencies?.[0]
+  getProvidedModuleIdForSharedModule(sharedModule: Module, compilation: Compilation): WebpackModuleId | null {
+    const referencedDependency = sharedModule.blocks?.[0]?.dependencies?.[0] || sharedModule.dependencies?.[0]
     if (!referencedDependency) {
       return null
     }
@@ -474,7 +470,7 @@ export class ModuleFederationIsolationPlugin {
 
           if (module.constructor.name === 'ConsumeSharedModule') {
             manifest.consumeSharedRedirection[moduleId] = {
-              providedModuleId: this.getProvidedModuleIdForConsumeSharedModule(module, compilation),
+              providedModuleId: this.getProvidedModuleIdForSharedModule(module, compilation),
             }
             return
           }
@@ -599,6 +595,29 @@ export class ModuleFederationIsolationPlugin {
             compilation.addRuntimeModule(chunk, new ModuleFederationIsolationInfoModule(manifest))
           }
         }
+      })
+
+      compilation.hooks.afterCodeGeneration.tap(PLUGIN_NAME, () => {
+        compilation.modules.forEach((module) => {
+          if (module.constructor.name === 'ProvideSharedModule') {
+            const codeGenerationResult = compilation.codeGenerationResults.getData(
+              module,
+              undefined,
+              'share-init-option'
+            )
+            const providedModuleId = this.getProvidedModuleIdForSharedModule(module, compilation)
+            const wrappedGetter = Template.asString([
+              `(function() {`,
+              Template.indent([
+                `var originalGetter = ${codeGenerationResult.getter};`,
+                `originalGetter.providedModuleId = ${JSON.stringify(providedModuleId)};`,
+                `return originalGetter;`,
+              ]),
+              `})()`,
+            ])
+            codeGenerationResult.getter = wrappedGetter
+          }
+        })
       })
     })
   }

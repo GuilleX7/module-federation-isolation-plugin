@@ -73,6 +73,8 @@ type FederationRuntimeConsumesOptions = {
 
 interface FederationRuntimeModuleToHandlerMapping {
   shareInfo: FederationRuntimeShareInfo
+  shareKey: string
+  getter: FederationRuntimeDependencyGetter
 }
 
 interface FederationRuntimeShareInfo {
@@ -87,11 +89,13 @@ interface FederationRuntimeSharedConfig {
   strictVersion?: boolean
 }
 
-type FederationRuntimeDependencyLib = () => WebpackModule['exports']
+interface FederationRuntimeDependencyLib {
+  (): WebpackModule['exports']
+}
 
 interface FederationRuntimeDependencyGetter {
   (): Promise<FederationRuntimeDependencyLib>
-  __originModuleId__?: WebpackModuleId
+  providedModuleId?: WebpackModuleId
 }
 
 interface FederationRuntimeDependency {
@@ -319,7 +323,7 @@ function createTranslationRequire(
       // Move instantiated module and clean up the origin cache
       ownModuleId = ownModuleId ?? isolatedModuleId
       ownRequire.c[ownModuleId] = originRequire.c[isolatedModuleId]
-      if (ownRequire !== originRequire) {
+      if (ownRequire !== originRequire || ownModuleId !== isolatedModuleId) {
         delete originRequire.c[isolatedModuleId]
         delete originRequire.m[isolatedModuleId]
       }
@@ -333,6 +337,8 @@ export function createMfiRuntimePlugin(options: RuntimePluginOptions): () => Fed
     const ownRequire = __webpack_require__
     let moduleToHandlerMapping: Record<WebpackModuleId, FederationRuntimeModuleToHandlerMapping> = {}
 
+    initiateRuntimeManifestIfPresent(ownRequire)
+
     ownRequire.federation.bundlerRuntime.consumes = new Proxy(ownRequire.federation.bundlerRuntime.consumes, {
       apply: (target, thisArg, args) => {
         // Hack: intercept information about module to handler mapping
@@ -341,8 +347,6 @@ export function createMfiRuntimePlugin(options: RuntimePluginOptions): () => Fed
         Reflect.apply(target, thisArg, args)
       },
     })
-
-    initiateRuntimeManifestIfPresent(ownRequire)
 
     return {
       name: 'ModuleFederationIsolationRuntimePlugin',
@@ -402,49 +406,6 @@ export function createMfiRuntimePlugin(options: RuntimePluginOptions): () => Fed
           return args
         }
 
-        const originHost = args.GlobalFederation.__INSTANCES__.find(
-          (instance) => instance.name === resolvedDependency.from
-        ) as ExtendedFederationHost
-
-        if (!originHost) {
-          console.warn(`[${PLUGIN_NAME}] Could not find host named ${resolvedDependency.from}`)
-          return args
-        } else if (!originHost.__webpack_require__) {
-          console.warn(`[${PLUGIN_NAME}] Host ${resolvedDependency.from} is not using ${PLUGIN_NAME}`)
-          return args
-        }
-
-        // Retrieve shared consume module ID from scope
-        const scopeMfiMarkIndex = args.scope.indexOf('/mfi/scope/')
-        if (scopeMfiMarkIndex === -1) {
-          console.warn(`[${PLUGIN_NAME}] Could not find MFI scope mark in scope '${args.scope}'`)
-          return args
-        }
-
-        const ownConsumeSharedModuleId = args.scope.slice(0, scopeMfiMarkIndex)
-
-        // Retrieve origin host require and module ID
-        const originRequire = originHost.__webpack_require__
-        let originModuleId = resolvedDependency.get.__originModuleId__
-
-        if (originModuleId === undefined) {
-          // If origin module ID is not present, then we should be providing the module ID
-          const ownProvideSharedModuleId = originRequire.federation.isolation.red[ownConsumeSharedModuleId]?.mid
-          if (ownProvideSharedModuleId !== null) {
-            originModuleId = ownProvideSharedModuleId
-            resolvedDependency.get.__originModuleId__ = ownProvideSharedModuleId
-          } else {
-            console.warn(`[${PLUGIN_NAME}] Could not find module ID for ${ownConsumeSharedModuleId}`)
-            return args
-          }
-        }
-
-        // Save the redirection in the own require cache
-        ownRequire.federation.isolation.red[ownConsumeSharedModuleId] = {
-          mid: originModuleId,
-          webpackRequire: originRequire,
-        }
-
         args.resolver = () => ({
           ...resolvedDependency,
           lib: undefined,
@@ -458,6 +419,50 @@ export function createMfiRuntimePlugin(options: RuntimePluginOptions): () => Fed
               return originalFactory
             })
             .then((originalFactory) => {
+              const originHost = args.GlobalFederation.__INSTANCES__.find(
+                (instance) => instance.name === resolvedDependency.from
+              ) as ExtendedFederationHost
+
+              if (!originHost) {
+                console.warn(`[${PLUGIN_NAME}] Could not find host named ${resolvedDependency.from}`)
+                return originalFactory
+              } else if (!originHost.__webpack_require__) {
+                console.warn(`[${PLUGIN_NAME}] Host ${resolvedDependency.from} is not using ${PLUGIN_NAME}`)
+                return originalFactory
+              }
+
+              // Retrieve shared consume module ID from scope
+              const scopeMfiMarkIndex = args.scope.indexOf('/mfi/scope/')
+              if (scopeMfiMarkIndex === -1) {
+                console.warn(`[${PLUGIN_NAME}] Could not find MFI scope mark in scope '${args.scope}'`)
+                return originalFactory
+              }
+
+              const ownConsumeSharedModuleId = args.scope.slice(0, scopeMfiMarkIndex)
+
+              // Retrieve origin host require and provided module ID
+              const originRequire = originHost.__webpack_require__
+              let originModuleId = resolvedDependency.get.providedModuleId
+
+              if (originModuleId === undefined) {
+                // Fallback: attempt to match module exports
+                const originModuleInstance = originalFactory()
+                originModuleId = Object.entries(originRequire.c).find(
+                  ([, { exports }]) => exports === originModuleInstance
+                )?.[0]
+              }
+
+              if (originModuleId === undefined) {
+                console.warn(`[${PLUGIN_NAME}] Could not find module ID for ${ownConsumeSharedModuleId}`)
+                return originalFactory
+              }
+
+              // Save the redirection in the own require cache
+              ownRequire.federation.isolation.red[ownConsumeSharedModuleId] = {
+                mid: originModuleId,
+                webpackRequire: originRequire,
+              }
+
               if (stateStrategy === RuntimeStateStrategy.ReuseShared) {
                 return originalFactory
               }
