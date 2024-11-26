@@ -429,7 +429,7 @@ export function createMfiRuntimePlugin(options: RuntimePluginOptions): () => Fed
 
         if (originModuleId === undefined) {
           // If origin module ID is not present, then we should be providing the module ID
-          if (originRequire.federation.isolation.red[ownConsumeSharedModuleId]?.mid != null) {
+          if (originRequire.federation.isolation.red[ownConsumeSharedModuleId]?.mid !== null) {
             originModuleId = resolvedDependency.get.__originModuleId__ =
               originRequire.federation.isolation.red[ownConsumeSharedModuleId].mid
           } else {

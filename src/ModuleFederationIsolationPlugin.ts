@@ -9,6 +9,7 @@ import {
   NormalModule,
   ModuleGraph,
   Compilation,
+  WebpackError,
 } from 'webpack'
 import { validate } from 'schema-utils'
 import semverSatisfies from 'semver/functions/satisfies'
@@ -178,6 +179,7 @@ export class ModuleFederationIsolationPlugin {
   private readonly options: PluginOptions
   private readonly remoteEntriesToApply: Set<string> = new Set()
   private remoteEntryIndex = 0
+  private maximumInstanceStateStrategyRequired: StateStrategy
 
   constructor(userOptions: Partial<PluginOptions> = {}) {
     validate(PLUGIN_OPTIONS_SCHEMA as any, userOptions, {
@@ -192,13 +194,13 @@ export class ModuleFederationIsolationPlugin {
       ...userOptions,
     }
 
-    let maximumInstanceStateStrategyRequired = this.options.stateStrategy
+    this.maximumInstanceStateStrategyRequired = this.options.stateStrategy
     for (const sharedDependency of Object.values(this.options.sharedDependencies)) {
       if (
         stateStrategyToRuntimeStateStrategy[sharedDependency.stateStrategy] >
-        stateStrategyToRuntimeStateStrategy[maximumInstanceStateStrategyRequired]
+        stateStrategyToRuntimeStateStrategy[this.maximumInstanceStateStrategyRequired]
       ) {
-        maximumInstanceStateStrategyRequired = sharedDependency.stateStrategy
+        this.maximumInstanceStateStrategyRequired = sharedDependency.stateStrategy
       }
     }
 
@@ -458,6 +460,10 @@ export class ModuleFederationIsolationPlugin {
       }
       const packageInfoByPackageJsonPath: Record<string, PackageInfo> = {}
       const rootProjectPackageJsonPath = this.normalizePath(path.join(compiler.context, 'package.json'))
+      const packageJsonPathByPackageNameAndVersion: Record<
+        string,
+        Record<string, { used: string; ignored: Set<string> }>
+      > = {}
 
       compilation.hooks.afterOptimizeModuleIds.tap(PLUGIN_NAME, () => {
         compilation.modules.forEach((module) => {
@@ -527,19 +533,26 @@ export class ModuleFederationIsolationPlugin {
 
           if (!manifest.packages[packageInfo.name]) {
             manifest.packages[packageInfo.name] = {}
+            packageJsonPathByPackageNameAndVersion[packageInfo.name] = {}
           }
+
           if (!manifest.packages[packageInfo.name][packageInfo.version]) {
             manifest.packages[packageInfo.name][packageInfo.version] = {
               modulePathToModuleId: {},
               semverRangesIn: [],
             }
+            packageJsonPathByPackageNameAndVersion[packageInfo.name][packageInfo.version] = {
+              used: associatedPackageJsonPath,
+              ignored: new Set(),
+            }
           }
+
           if (manifest.packages[packageInfo.name][packageInfo.version].modulePathToModuleId[moduleRelativePath]) {
-            compiler
-              .getInfrastructureLogger(PLUGIN_NAME)
-              .warn(
-                `Module ${moduleRelativePath} from package ${packageInfo.name}@${packageInfo.version} was found duplicated and will be ignored`
-              )
+            // Hint: multiple instances of a library with the same name and version detected. We'll use first one,
+            // and complain later on
+            packageJsonPathByPackageNameAndVersion[packageInfo.name][packageInfo.version].ignored.add(
+              associatedPackageJsonPath
+            )
             return
           }
 
@@ -554,6 +567,27 @@ export class ModuleFederationIsolationPlugin {
 
           existingEntry.semverRangesIn = [...new Set([...existingEntry.semverRangesIn, ...rangesIn])]
         })
+
+        if (
+          stateStrategyToRuntimeStateStrategy[StateStrategy.CreateNew] <
+          stateStrategyToRuntimeStateStrategy[this.maximumInstanceStateStrategyRequired]
+        ) {
+          Object.entries(packageJsonPathByPackageNameAndVersion).forEach(([packageName, versions]) => {
+            Object.entries(versions).forEach(([version, { used, ignored }]) => {
+              if (ignored.size) {
+                compilation.warnings.push(
+                  new WebpackError(
+                    Template.asString([
+                      `multiple instances of package ${packageName}@${version} detected.`,
+                      `When reusing own libraries, only the one found in ${used} will be used.`,
+                      `Ignored: ${[...ignored].join(', ')}`,
+                    ])
+                  )
+                )
+              }
+            })
+          })
+        }
       })
 
       compilation.hooks.afterOptimizeChunkIds.tap(PLUGIN_NAME, (chunks) => {
