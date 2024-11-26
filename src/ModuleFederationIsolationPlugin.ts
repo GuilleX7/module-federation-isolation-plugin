@@ -17,7 +17,7 @@ import { RuntimePluginOptions, RuntimeStateStrategy } from './ModuleFederationIs
 
 const PLUGIN_NAME = 'ModuleFederationIsolationPlugin'
 
-enum StateStrategy {
+export enum StateStrategy {
   ReuseShared = 'reuse-shared',
   CreateNew = 'create-new',
   CreateNewAndReuseOwnLibraries = 'create-new-and-reuse-own-libraries',
@@ -29,7 +29,7 @@ const stateStrategyToRuntimeStateStrategy: Record<StateStrategy, number> = {
   [StateStrategy.CreateNewAndReuseOwnLibraries]: RuntimeStateStrategy.CreateNewAndReuseOwnLibraries,
 }
 
-type PluginOptions = {
+export type PluginOptions = {
   entry: string | string[]
   stateStrategy: StateStrategy
   sharedDependencies: Record<
