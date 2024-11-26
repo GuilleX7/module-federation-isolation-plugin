@@ -429,9 +429,10 @@ export function createMfiRuntimePlugin(options: RuntimePluginOptions): () => Fed
 
         if (originModuleId === undefined) {
           // If origin module ID is not present, then we should be providing the module ID
-          if (originRequire.federation.isolation.red[ownConsumeSharedModuleId]?.mid !== null) {
-            originModuleId = resolvedDependency.get.__originModuleId__ =
-              originRequire.federation.isolation.red[ownConsumeSharedModuleId].mid
+          const ownProvideSharedModuleId = originRequire.federation.isolation.red[ownConsumeSharedModuleId]?.mid
+          if (ownProvideSharedModuleId !== null) {
+            originModuleId = ownProvideSharedModuleId
+            resolvedDependency.get.__originModuleId__ = ownProvideSharedModuleId
           } else {
             console.warn(`[${PLUGIN_NAME}] Could not find module ID for ${ownConsumeSharedModuleId}`)
             return args
