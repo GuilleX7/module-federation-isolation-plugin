@@ -605,7 +605,15 @@ export class ModuleFederationIsolationPlugin {
               undefined,
               'share-init-option'
             )
+            if (!codeGenerationResult || !codeGenerationResult.getter) {
+              return
+            }
+
             const providedModuleId = this.getProvidedModuleIdForSharedModule(module, compilation)
+            if (providedModuleId === null) {
+              return
+            }
+
             const wrappedGetter = Template.asString([
               `(function() {`,
               Template.indent([
