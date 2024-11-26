@@ -12,13 +12,20 @@ import {
 } from 'webpack'
 import { validate } from 'schema-utils'
 import semverSatisfies from 'semver/functions/satisfies'
+import { RuntimePluginOptions, RuntimeStateStrategy } from './ModuleFederationIsolationRuntimePlugin'
 
 const PLUGIN_NAME = 'ModuleFederationIsolationPlugin'
 
 enum StateStrategy {
-  UseOrigin = 'use-origin',
-  UseIsolated = 'use-isolated',
-  UseOwn = 'use-own',
+  ReuseShared = 'reuse-shared',
+  CreateNew = 'create-new',
+  CreateNewAndReuseOwnLibraries = 'create-new-and-reuse-own-libraries',
+}
+
+const stateStrategyToRuntimeStateStrategy: Record<StateStrategy, number> = {
+  [StateStrategy.ReuseShared]: RuntimeStateStrategy.ReuseShared,
+  [StateStrategy.CreateNew]: RuntimeStateStrategy.CreateNew,
+  [StateStrategy.CreateNewAndReuseOwnLibraries]: RuntimeStateStrategy.CreateNewAndReuseOwnLibraries,
 }
 
 type PluginOptions = {
@@ -27,7 +34,7 @@ type PluginOptions = {
   sharedDependencies: Record<
     string,
     {
-      instanceStateStrategy: StateStrategy
+      stateStrategy: StateStrategy
     }
   >
 }
@@ -97,12 +104,6 @@ const PLUGIN_OPTIONS_SCHEMA = {
     },
   },
   additionalProperties: false,
-}
-
-const instanceStateStrategyPriority: Record<StateStrategy, number> = {
-  [StateStrategy.UseOrigin]: 0,
-  [StateStrategy.UseIsolated]: 10,
-  [StateStrategy.UseOwn]: 20,
 }
 
 class ModuleFederationIsolationInfoModule extends RuntimeModule {
@@ -186,7 +187,7 @@ export class ModuleFederationIsolationPlugin {
     this.options = {
       // Empty means we apply the plugin to all remote entries
       entry: '',
-      stateStrategy: StateStrategy.UseIsolated,
+      stateStrategy: StateStrategy.CreateNew,
       sharedDependencies: {},
       ...userOptions,
     }
@@ -194,10 +195,10 @@ export class ModuleFederationIsolationPlugin {
     let maximumInstanceStateStrategyRequired = this.options.stateStrategy
     for (const sharedDependency of Object.values(this.options.sharedDependencies)) {
       if (
-        instanceStateStrategyPriority[sharedDependency.instanceStateStrategy] >
-        instanceStateStrategyPriority[maximumInstanceStateStrategyRequired]
+        stateStrategyToRuntimeStateStrategy[sharedDependency.stateStrategy] >
+        stateStrategyToRuntimeStateStrategy[maximumInstanceStateStrategyRequired]
       ) {
-        maximumInstanceStateStrategyRequired = sharedDependency.instanceStateStrategy
+        maximumInstanceStateStrategyRequired = sharedDependency.stateStrategy
       }
     }
 
@@ -215,6 +216,21 @@ export class ModuleFederationIsolationPlugin {
     return filePath.replaceAll(path.sep, path.posix.sep)
   }
 
+  getRuntimePluginOptions(options: PluginOptions): RuntimePluginOptions {
+    return {
+      stateStrategy: stateStrategyToRuntimeStateStrategy[options.stateStrategy],
+      sharedDependencies: Object.entries(options.sharedDependencies).reduce<RuntimePluginOptions['sharedDependencies']>(
+        (acc, [packageName, sharedDependency]) => {
+          acc[packageName] = {
+            stateStrategy: stateStrategyToRuntimeStateStrategy[sharedDependency.stateStrategy],
+          }
+          return acc
+        },
+        {}
+      ),
+    }
+  }
+
   createRuntimePlugin(compiler: Compiler): string {
     const isolationFolderPath = path.resolve(compiler.context, 'node_modules', '.federation', 'isolation')
     fs.mkdirSync(isolationFolderPath, { recursive: true })
@@ -226,10 +242,7 @@ export class ModuleFederationIsolationPlugin {
         `const { createMfiRuntimePlugin } = require('${this.normalizePath(
           path.resolve(__dirname, 'ModuleFederationIsolationRuntimePlugin')
         )}');`,
-        `module.exports = createMfiRuntimePlugin(${JSON.stringify({
-          stateStrategy: this.options.stateStrategy,
-          sharedDependencies: this.options.sharedDependencies,
-        })});`,
+        `module.exports = createMfiRuntimePlugin(${JSON.stringify(this.getRuntimePluginOptions(this.options))});`,
       ])
     )
 

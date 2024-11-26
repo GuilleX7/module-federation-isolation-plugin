@@ -7,14 +7,18 @@ import type {
 
 const PLUGIN_NAME = 'ModuleFederationIsolationPlugin'
 
-type StateStrategy = 'use-origin' | 'use-isolated' | 'use-own'
+export const enum RuntimeStateStrategy {
+  ReuseShared = 0,
+  CreateNew = 10,
+  CreateNewAndReuseOwnLibraries = 20,
+}
 
-type RuntimePluginOptions = {
-  stateStrategy: StateStrategy
+export type RuntimePluginOptions = {
+  stateStrategy: RuntimeStateStrategy
   sharedDependencies: Record<
     string,
     {
-      stateStrategy: StateStrategy
+      stateStrategy: RuntimeStateStrategy
     }
   >
 }
@@ -453,12 +457,12 @@ export function createMfiRuntimePlugin(options: RuntimePluginOptions): () => Fed
               return originalFactory
             })
             .then((originalFactory) => {
-              if (stateStrategy === 'use-origin') {
+              if (stateStrategy === RuntimeStateStrategy.ReuseShared) {
                 return originalFactory
               }
 
               const createPatchedRequire: WebpackRequirePatcher =
-                stateStrategy === 'use-isolated' ? createIsolationRequire : createTranslationRequire
+                stateStrategy === RuntimeStateStrategy.CreateNew ? createIsolationRequire : createTranslationRequire
 
               const patchedRequire = createPatchedRequire(
                 ownRequire,
