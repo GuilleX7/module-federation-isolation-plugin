@@ -215,7 +215,7 @@ export class ModuleFederationIsolationPlugin {
   }
 
   normalizePath(filePath: string): string {
-    return filePath.replaceAll(path.sep, path.posix.sep)
+    return filePath.replace(/\\/g, path.posix.sep)
   }
 
   getRuntimePluginOptions(options: PluginOptions): RuntimePluginOptions {
