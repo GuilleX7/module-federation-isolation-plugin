@@ -8,9 +8,9 @@ import type {
 const PLUGIN_NAME = 'ModuleFederationIsolationPlugin'
 
 export const enum RuntimeStateStrategy {
-  ReuseShared = 0,
-  CreateNew = 10,
-  CreateNewAndReuseOwnLibraries = 20,
+  UseOrigin = 0,
+  Isolate = 10,
+  ReuseOwn = 20,
 }
 
 export const enum RuntimeVerbosity {
@@ -313,7 +313,7 @@ function createTranslationRequire(
               ownPackageVersion = possibleOwnPackageVersion
               log(
                 RuntimeVerbosity.Debug,
-                `[${PLUGIN_NAME}] Using package ${ownRequire.federation.isolation.hostName}'s ${originUniversalModule.pkgName}~${ownPackageVersion} for supplying ${originHostName}'s ${originPackageUniversalId}`
+                `Using package ${ownRequire.federation.isolation.hostName}'s ${originUniversalModule.pkgName}~${ownPackageVersion} for supplying ${originHostName}'s ${originPackageUniversalId}`
               )
             }
           }
@@ -333,7 +333,7 @@ function createTranslationRequire(
                 ownPackageVersion = possibleOwnPackageVersion
                 log(
                   RuntimeVerbosity.Debug,
-                  `[${PLUGIN_NAME}] Storing package ${originHostName}'s ${originPackageUniversalId} in place of ${ownRequire.federation.isolation.hostName}'s ${originUniversalModule.pkgName}~${ownPackageVersion}`
+                  `Storing package ${originHostName}'s ${originPackageUniversalId} in place of ${ownRequire.federation.isolation.hostName}'s ${originUniversalModule.pkgName}~${ownPackageVersion}`
                 )
               }
             }
@@ -418,7 +418,7 @@ export function createMfiRuntimePlugin(options: RuntimePluginOptions): () => Fed
         } else if (ownHost.__webpack_require__ !== ownRequire) {
           log(
             RuntimeVerbosity.Warnings,
-            `[${PLUGIN_NAME}] The __webpack_require__ function of the host ${ownHost.name} is already set. This may lead to unexpected behavior.`
+            `The __webpack_require__ function of the host ${ownHost.name} is already set. This may lead to unexpected behavior.`
           )
         }
         // Save the host name in the manifest
@@ -484,23 +484,17 @@ export function createMfiRuntimePlugin(options: RuntimePluginOptions): () => Fed
               ) as ExtendedFederationHost
 
               if (!originHost) {
-                log(RuntimeVerbosity.Warnings, `[${PLUGIN_NAME}] Could not find host named ${resolvedDependency.from}`)
+                log(RuntimeVerbosity.Warnings, `Could not find host named ${resolvedDependency.from}`)
                 return originalFactory
               } else if (!originHost.__webpack_require__) {
-                log(
-                  RuntimeVerbosity.Warnings,
-                  `[${PLUGIN_NAME}] Host ${resolvedDependency.from} is not using ${PLUGIN_NAME}`
-                )
+                log(RuntimeVerbosity.Warnings, `Host ${resolvedDependency.from} is not using ${PLUGIN_NAME}`)
                 return originalFactory
               }
 
               // Retrieve shared consume module ID from scope
               const scopeMfiMarkIndex = args.scope.indexOf('/mfi/scope/')
               if (scopeMfiMarkIndex === -1) {
-                log(
-                  RuntimeVerbosity.Warnings,
-                  `[${PLUGIN_NAME}] Could not find MFI scope mark in scope '${args.scope}'`
-                )
+                log(RuntimeVerbosity.Warnings, `Could not find MFI scope mark in scope '${args.scope}'`)
                 return originalFactory
               }
 
@@ -519,10 +513,7 @@ export function createMfiRuntimePlugin(options: RuntimePluginOptions): () => Fed
               }
 
               if (originModuleId === undefined) {
-                log(
-                  RuntimeVerbosity.Warnings,
-                  `[${PLUGIN_NAME}] Could not find module ID for ${ownConsumeSharedModuleId}`
-                )
+                log(RuntimeVerbosity.Warnings, `Could not find module ID for ${ownConsumeSharedModuleId}`)
                 return originalFactory
               }
 
@@ -532,12 +523,12 @@ export function createMfiRuntimePlugin(options: RuntimePluginOptions): () => Fed
                 webpackRequire: originRequire,
               }
 
-              if (stateStrategy === RuntimeStateStrategy.ReuseShared) {
+              if (stateStrategy === RuntimeStateStrategy.UseOrigin) {
                 return originalFactory
               }
 
               const createPatchedRequire: WebpackRequirePatcher =
-                stateStrategy === RuntimeStateStrategy.CreateNew ? createIsolationRequire : createTranslationRequire
+                stateStrategy === RuntimeStateStrategy.Isolate ? createIsolationRequire : createTranslationRequire
 
               const patchedRequire = createPatchedRequire(
                 ownRequire,

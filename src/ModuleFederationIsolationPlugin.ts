@@ -31,9 +31,9 @@ export enum Verbosity {
 }
 
 const stateStrategyToRuntimeStateStrategy: Record<StateStrategy, number> = {
-  [StateStrategy.UseOrigin]: RuntimeStateStrategy.ReuseShared,
-  [StateStrategy.Isolate]: RuntimeStateStrategy.CreateNew,
-  [StateStrategy.ReuseOwn]: RuntimeStateStrategy.CreateNewAndReuseOwnLibraries,
+  [StateStrategy.UseOrigin]: RuntimeStateStrategy.UseOrigin,
+  [StateStrategy.Isolate]: RuntimeStateStrategy.Isolate,
+  [StateStrategy.ReuseOwn]: RuntimeStateStrategy.ReuseOwn,
 }
 
 const verbosityToRuntimeVerbosity: Record<Verbosity, number> = {
@@ -297,7 +297,7 @@ export class ModuleFederationIsolationPlugin {
   }
 
   disableConflictingConfiguration(compiler: Compiler): void {
-    if (RuntimeStateStrategy.CreateNew < this.maximumRuntimeStateStrategyRequired) {
+    if (RuntimeStateStrategy.Isolate < this.maximumRuntimeStateStrategyRequired) {
       const originalMangleExports = compiler.options?.optimization?.mangleExports
 
       compiler.hooks.afterEnvironment.tap(PLUGIN_NAME, () => {
@@ -391,14 +391,19 @@ export class ModuleFederationIsolationPlugin {
   }
 
   tryToInsightDependencies(
-    moduleGraph: ModuleGraph,
+    compilation: Compilation,
     module: Module,
     modulePackageInfo: PackageInfo,
     packageInfoMap: Record<string, PackageInfo>
   ): void {
-    const dependencies = moduleGraph.getOutgoingConnections(module)
+    const dependencies = compilation.moduleGraph.getOutgoingConnections(module)
     for (const dependency of dependencies) {
-      const dependencyModule = dependency.module
+      let dependencyModule: Module | null = dependency.module
+
+      if (dependencyModule.constructor.name === 'ConsumeSharedModule') {
+        dependencyModule = this.getProvidedModuleForSharedModule(dependencyModule, compilation)
+      }
+
       if (!dependencyModule || dependencyModule.constructor.name !== 'NormalModule') {
         continue
       }
@@ -433,14 +438,18 @@ export class ModuleFederationIsolationPlugin {
     }
   }
 
-  getProvidedModuleIdForSharedModule(sharedModule: Module, compilation: Compilation): WebpackModuleId | null {
+  getProvidedModuleForSharedModule(sharedModule: Module, compilation: Compilation): Module | null {
     const referencedDependency = sharedModule.blocks?.[0]?.dependencies?.[0] || sharedModule.dependencies?.[0]
     if (!referencedDependency) {
       return null
     }
 
-    const referencedModule = compilation.moduleGraph.getModule(referencedDependency)
-    if (!referencedModule || referencedModule.constructor.name !== 'NormalModule') {
+    return compilation.moduleGraph.getModule(referencedDependency)
+  }
+
+  getProvidedModuleIdForSharedModule(sharedModule: Module, compilation: Compilation): WebpackModuleId | null {
+    const referencedModule = this.getProvidedModuleForSharedModule(sharedModule, compilation)
+    if (!referencedModule) {
       return null
     }
 
@@ -529,12 +538,7 @@ export class ModuleFederationIsolationPlugin {
             return
           }
 
-          this.tryToInsightDependencies(
-            compilation.moduleGraph,
-            normalModule,
-            packageInfo,
-            packageInfoByPackageJsonPath
-          )
+          this.tryToInsightDependencies(compilation, normalModule, packageInfo, packageInfoByPackageJsonPath)
 
           // We don't want to include modules from the project's package.json
           if (associatedPackageJsonPath === rootProjectPackageJsonPath) {
