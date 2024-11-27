@@ -320,7 +320,7 @@ function createTranslationRequire(
 
           if (ownPackageVersion === null) {
             // Try to check if origin module could be loaded in place of any own module that is not loaded
-            const compatibleOwnPackageVersion = ownPackageVersions?.find(([version, rangesIn]) => {
+            const compatibleOwnPackageVersion = ownPackageVersions?.find(([_, rangesIn]) => {
               return rangesIn.every((range) => semverSatisfies(originUniversalModule.pkgVersion, range))
             })
             if (compatibleOwnPackageVersion) {

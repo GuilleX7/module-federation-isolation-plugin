@@ -7,7 +7,6 @@ import {
   Template,
   Module,
   NormalModule,
-  ModuleGraph,
   Compilation,
   WebpackError,
 } from 'webpack'
