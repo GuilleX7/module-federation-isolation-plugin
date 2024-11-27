@@ -1,6 +1,6 @@
 {
   "name": "module-federation-isolation-plugin",
-  "version": "0.0.1-indev.0",
+  "version": "0.0.1",
   "description": "Implementing isolation of shared dependencies for Module Federation",
   "author": "Guillermo Diz <guillermox7@gmail.com>",
   "main": "dist/ModuleFederationIsolationPlugin.js",
