@@ -13,20 +13,34 @@ import {
 } from 'webpack'
 import { validate } from 'schema-utils'
 import semverSatisfies from 'semver/functions/satisfies'
-import { RuntimePluginOptions, RuntimeStateStrategy } from './ModuleFederationIsolationRuntimePlugin'
+import { RuntimePluginOptions, RuntimeStateStrategy, RuntimeVerbosity } from './ModuleFederationIsolationRuntimePlugin'
 
 const PLUGIN_NAME = 'ModuleFederationIsolationPlugin'
 
 export enum StateStrategy {
-  ReuseShared = 'reuse-shared',
-  CreateNew = 'create-new',
-  CreateNewAndReuseOwnLibraries = 'create-new-and-reuse-own-libraries',
+  UseOrigin = 'use-origin',
+  Isolate = 'isolate',
+  ReuseOwn = 'reuse-own',
+}
+
+export enum Verbosity {
+  Unset = 'unset',
+  None = 'none',
+  Warnings = 'warnings',
+  Debug = 'debug',
 }
 
 const stateStrategyToRuntimeStateStrategy: Record<StateStrategy, number> = {
-  [StateStrategy.ReuseShared]: RuntimeStateStrategy.ReuseShared,
-  [StateStrategy.CreateNew]: RuntimeStateStrategy.CreateNew,
-  [StateStrategy.CreateNewAndReuseOwnLibraries]: RuntimeStateStrategy.CreateNewAndReuseOwnLibraries,
+  [StateStrategy.UseOrigin]: RuntimeStateStrategy.ReuseShared,
+  [StateStrategy.Isolate]: RuntimeStateStrategy.CreateNew,
+  [StateStrategy.ReuseOwn]: RuntimeStateStrategy.CreateNewAndReuseOwnLibraries,
+}
+
+const verbosityToRuntimeVerbosity: Record<Verbosity, number> = {
+  [Verbosity.Unset]: RuntimeVerbosity.Unset,
+  [Verbosity.None]: RuntimeVerbosity.None,
+  [Verbosity.Warnings]: RuntimeVerbosity.Warnings,
+  [Verbosity.Debug]: RuntimeVerbosity.Debug,
 }
 
 export type PluginOptions = {
@@ -38,6 +52,7 @@ export type PluginOptions = {
       stateStrategy: StateStrategy
     }
   >
+  verbosity: Verbosity
 }
 
 type PackageInfo = {
@@ -102,6 +117,10 @@ const PLUGIN_OPTIONS_SCHEMA = {
           },
         },
       },
+    },
+    verbosity: {
+      type: 'string',
+      enum: Object.values(Verbosity),
     },
   },
   additionalProperties: false,
@@ -179,7 +198,7 @@ export class ModuleFederationIsolationPlugin {
   private readonly options: PluginOptions
   private readonly remoteEntriesToApply: Set<string> = new Set()
   private remoteEntryIndex = 0
-  private maximumInstanceStateStrategyRequired: StateStrategy
+  private maximumRuntimeStateStrategyRequired: RuntimeStateStrategy
 
   constructor(userOptions: Partial<PluginOptions> = {}) {
     validate(PLUGIN_OPTIONS_SCHEMA as any, userOptions, {
@@ -189,18 +208,18 @@ export class ModuleFederationIsolationPlugin {
     this.options = {
       // Empty means we apply the plugin to all remote entries
       entry: '',
-      stateStrategy: StateStrategy.CreateNew,
+      stateStrategy: StateStrategy.Isolate,
       sharedDependencies: {},
+      verbosity: Verbosity.Unset,
       ...userOptions,
     }
 
-    this.maximumInstanceStateStrategyRequired = this.options.stateStrategy
+    this.maximumRuntimeStateStrategyRequired = stateStrategyToRuntimeStateStrategy[this.options.stateStrategy]
     for (const sharedDependency of Object.values(this.options.sharedDependencies)) {
       if (
-        stateStrategyToRuntimeStateStrategy[sharedDependency.stateStrategy] >
-        stateStrategyToRuntimeStateStrategy[this.maximumInstanceStateStrategyRequired]
+        stateStrategyToRuntimeStateStrategy[sharedDependency.stateStrategy] > this.maximumRuntimeStateStrategyRequired
       ) {
-        this.maximumInstanceStateStrategyRequired = sharedDependency.stateStrategy
+        this.maximumRuntimeStateStrategyRequired = stateStrategyToRuntimeStateStrategy[sharedDependency.stateStrategy]
       }
     }
 
@@ -230,6 +249,7 @@ export class ModuleFederationIsolationPlugin {
         },
         {}
       ),
+      runtimeVerbosity: verbosityToRuntimeVerbosity[options.verbosity],
     }
   }
 
@@ -277,20 +297,29 @@ export class ModuleFederationIsolationPlugin {
   }
 
   disableConflictingConfiguration(compiler: Compiler): void {
-    const originalMangleExports = compiler.options?.optimization?.mangleExports
+    if (RuntimeStateStrategy.CreateNew < this.maximumRuntimeStateStrategyRequired) {
+      const originalMangleExports = compiler.options?.optimization?.mangleExports
 
-    compiler.hooks.afterEnvironment.tap(PLUGIN_NAME, () => {
-      // Disable export mangling
-      if (compiler.options.optimization.mangleExports !== false) {
-        if (originalMangleExports !== undefined) {
-          compiler
-            .getInfrastructureLogger(PLUGIN_NAME)
-            .warn('Export mangling has been disabled to ensure stable export naming')
+      compiler.hooks.afterEnvironment.tap(PLUGIN_NAME, () => {
+        // Disable export mangling
+        if (compiler.options.optimization.mangleExports !== false) {
+          if (originalMangleExports !== undefined) {
+            compiler
+              .getInfrastructureLogger(PLUGIN_NAME)
+              .warn('Export mangling has been disabled to ensure stable export naming')
+          }
+
+          compiler.options.optimization.mangleExports = false
         }
+      })
+    }
+  }
 
-        compiler.options.optimization.mangleExports = false
-      }
-    })
+  setRuntimeVerbosity(compiler: Compiler): void {
+    if (this.options.verbosity === Verbosity.Unset) {
+      // Set as warnings for development mode, and none for production mode
+      this.options.verbosity = compiler.options.mode === 'development' ? Verbosity.Warnings : Verbosity.None
+    }
   }
 
   getPackageJsonPathForModulePath(modulePath: string): string | null {
@@ -564,10 +593,7 @@ export class ModuleFederationIsolationPlugin {
           existingEntry.semverRangesIn = [...new Set([...existingEntry.semverRangesIn, ...rangesIn])]
         })
 
-        if (
-          stateStrategyToRuntimeStateStrategy[StateStrategy.CreateNew] <
-          stateStrategyToRuntimeStateStrategy[this.maximumInstanceStateStrategyRequired]
-        ) {
+        if (stateStrategyToRuntimeStateStrategy[StateStrategy.Isolate] < this.maximumRuntimeStateStrategyRequired) {
           Object.entries(packageJsonPathByPackageNameAndVersion).forEach(([packageName, versions]) => {
             Object.entries(versions).forEach(([version, { used, ignored }]) => {
               if (ignored.size) {
@@ -632,6 +658,7 @@ export class ModuleFederationIsolationPlugin {
 
   apply(compiler: Compiler): void {
     this.disableConflictingConfiguration(compiler)
+    this.setRuntimeVerbosity(compiler)
     this.injectRuntimePlugins(compiler)
     this.gatherModuleInfoAndAttachToRuntime(compiler)
   }

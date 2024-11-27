@@ -13,6 +13,13 @@ export const enum RuntimeStateStrategy {
   CreateNewAndReuseOwnLibraries = 20,
 }
 
+export const enum RuntimeVerbosity {
+  Unset = -1,
+  None = 0,
+  Warnings = 5,
+  Debug = 10,
+}
+
 export type RuntimePluginOptions = {
   stateStrategy: RuntimeStateStrategy
   sharedDependencies: Record<
@@ -21,6 +28,7 @@ export type RuntimePluginOptions = {
       stateStrategy: RuntimeStateStrategy
     }
   >
+  runtimeVerbosity: RuntimeVerbosity
 }
 
 declare global {
@@ -156,7 +164,8 @@ type ExtendedFederationHost = {
 type WebpackRequirePatcher = (
   ownRequire: WebpackRequire,
   originalOriginRequire: WebpackRequire,
-  isolationNamespace: string
+  isolationNamespace: string,
+  log: (verbosity: RuntimeVerbosity, message: string) => void
 ) => WebpackRequire
 
 function initiateRuntimeManifestIfPresent(ownRequire: WebpackRequire): void {
@@ -257,7 +266,8 @@ function createIsolationRequire(
 function createTranslationRequire(
   ownRequire: WebpackRequire,
   originalOriginRequire: WebpackRequire,
-  isolationNamespace: string
+  isolationNamespace: string,
+  log: (verbosity: RuntimeVerbosity, message: string) => void
 ): WebpackRequire {
   return new Proxy(originalOriginRequire, {
     apply(_, __, args: [WebpackModuleId]) {
@@ -282,10 +292,52 @@ function createTranslationRequire(
         let ownPackageVersion = ownRequire.federation.isolation.pkgMatch[originHostName]?.[originPackageUniversalId]
 
         if (ownPackageVersion === undefined) {
-          ownPackageVersion =
-            ownRequire.federation.isolation.pkgVersions[originUniversalModule.pkgName]?.find(([, rangesIn]) =>
-              rangesIn.every((range) => semverSatisfies(originUniversalModule.pkgVersion, range))
-            )?.[0] ?? null
+          ownPackageVersion = null
+          const ownPackageVersions = ownRequire.federation.isolation.pkgVersions[originUniversalModule.pkgName]
+          const originPackageVersions = originRequire.federation.isolation.pkgVersions[originUniversalModule.pkgName]
+          const originPackageVersion = originPackageVersions.find(
+            ([version]) => version === originUniversalModule.pkgVersion
+          )
+
+          // If a compatible module is already loaded, use it
+          const ownPackageVersionCompatibleWithOriginPackage = ownPackageVersions?.find(([version]) => {
+            return originPackageVersion?.[1].every((range) => semverSatisfies(version, range))
+          })
+          if (ownPackageVersionCompatibleWithOriginPackage) {
+            const possibleOwnPackageVersion = ownPackageVersionCompatibleWithOriginPackage[0]
+            const possibleOwnModuleId =
+              ownRequire.federation.isolation.pkg[originUniversalModule.pkgName][possibleOwnPackageVersion][1][
+                originUniversalModule.modulePath
+              ]
+            if (ownRequire.c[possibleOwnModuleId]) {
+              ownPackageVersion = possibleOwnPackageVersion
+              log(
+                RuntimeVerbosity.Debug,
+                `[${PLUGIN_NAME}] Using package ${ownRequire.federation.isolation.hostName}'s ${originUniversalModule.pkgName}~${ownPackageVersion} for supplying ${originHostName}'s ${originPackageUniversalId}`
+              )
+            }
+          }
+
+          if (ownPackageVersion === null) {
+            // Try to check if origin module could be loaded in place of any own module that is not loaded
+            const compatibleOwnPackageVersion = ownPackageVersions?.find(([version, rangesIn]) => {
+              return rangesIn.every((range) => semverSatisfies(originUniversalModule.pkgVersion, range))
+            })
+            if (compatibleOwnPackageVersion) {
+              const possibleOwnPackageVersion = compatibleOwnPackageVersion[0]
+              const possibleOwnModuleId =
+                ownRequire.federation.isolation.pkg[originUniversalModule.pkgName][possibleOwnPackageVersion][1][
+                  originUniversalModule.modulePath
+                ]
+              if (!ownRequire.c[possibleOwnModuleId]) {
+                ownPackageVersion = possibleOwnPackageVersion
+                log(
+                  RuntimeVerbosity.Debug,
+                  `[${PLUGIN_NAME}] Storing package ${originHostName}'s ${originPackageUniversalId} in place of ${ownRequire.federation.isolation.hostName}'s ${originUniversalModule.pkgName}~${ownPackageVersion}`
+                )
+              }
+            }
+          }
 
           ownRequire.federation.isolation.pkgMatch[originHostName] = {
             ...(ownRequire.federation.isolation.pkgMatch[originHostName] || {}),
@@ -297,7 +349,7 @@ function createTranslationRequire(
           ownModuleId =
             ownRequire.federation.isolation.pkg[originUniversalModule.pkgName][ownPackageVersion][1][
               originUniversalModule.modulePath
-            ]
+            ] ?? null
         }
       }
 
@@ -316,7 +368,7 @@ function createTranslationRequire(
       // Module is not in cache, create a new module instance
       originRequire.m[isolatedModuleId] = patchModuleFactory(
         originRequire.m[originModuleId],
-        createTranslationRequire(ownRequire, originRequire, isolationNamespace)
+        createTranslationRequire(ownRequire, originRequire, isolationNamespace, log)
       )
       originRequire(isolatedModuleId)
 
@@ -348,16 +400,24 @@ export function createMfiRuntimePlugin(options: RuntimePluginOptions): () => Fed
       },
     })
 
+    const log = (verbosity: RuntimeVerbosity, message: string) => {
+      if (options.runtimeVerbosity >= verbosity) {
+        const logFunction = verbosity === RuntimeVerbosity.Debug ? console.debug : console.warn
+        logFunction(`[${PLUGIN_NAME}] ${message}`)
+      }
+    }
+
     return {
       name: 'ModuleFederationIsolationRuntimePlugin',
-      version: '2.0.0',
+      version: '0.0.1',
       beforeInit: (args) => {
         const ownHost = args.origin
         // Expose the __webpack_require__ function in the federation host
         if (!ownHost.__webpack_require__) {
           ownHost.__webpack_require__ = ownRequire
         } else if (ownHost.__webpack_require__ !== ownRequire) {
-          console.warn(
+          log(
+            RuntimeVerbosity.Warnings,
             `[${PLUGIN_NAME}] The __webpack_require__ function of the host ${ownHost.name} is already set. This may lead to unexpected behavior.`
           )
         }
@@ -424,17 +484,23 @@ export function createMfiRuntimePlugin(options: RuntimePluginOptions): () => Fed
               ) as ExtendedFederationHost
 
               if (!originHost) {
-                console.warn(`[${PLUGIN_NAME}] Could not find host named ${resolvedDependency.from}`)
+                log(RuntimeVerbosity.Warnings, `[${PLUGIN_NAME}] Could not find host named ${resolvedDependency.from}`)
                 return originalFactory
               } else if (!originHost.__webpack_require__) {
-                console.warn(`[${PLUGIN_NAME}] Host ${resolvedDependency.from} is not using ${PLUGIN_NAME}`)
+                log(
+                  RuntimeVerbosity.Warnings,
+                  `[${PLUGIN_NAME}] Host ${resolvedDependency.from} is not using ${PLUGIN_NAME}`
+                )
                 return originalFactory
               }
 
               // Retrieve shared consume module ID from scope
               const scopeMfiMarkIndex = args.scope.indexOf('/mfi/scope/')
               if (scopeMfiMarkIndex === -1) {
-                console.warn(`[${PLUGIN_NAME}] Could not find MFI scope mark in scope '${args.scope}'`)
+                log(
+                  RuntimeVerbosity.Warnings,
+                  `[${PLUGIN_NAME}] Could not find MFI scope mark in scope '${args.scope}'`
+                )
                 return originalFactory
               }
 
@@ -453,7 +519,10 @@ export function createMfiRuntimePlugin(options: RuntimePluginOptions): () => Fed
               }
 
               if (originModuleId === undefined) {
-                console.warn(`[${PLUGIN_NAME}] Could not find module ID for ${ownConsumeSharedModuleId}`)
+                log(
+                  RuntimeVerbosity.Warnings,
+                  `[${PLUGIN_NAME}] Could not find module ID for ${ownConsumeSharedModuleId}`
+                )
                 return originalFactory
               }
 
@@ -473,7 +542,8 @@ export function createMfiRuntimePlugin(options: RuntimePluginOptions): () => Fed
               const patchedRequire = createPatchedRequire(
                 ownRequire,
                 originRequire,
-                `mfi/${ownRequire.federation.isolation.hostName}/${pkgName}/${pkgVersion}`
+                `mfi/${ownRequire.federation.isolation.hostName}/${pkgName}/${pkgVersion}`,
+                log
               )
               return () => patchedRequire(originModuleId)
             }),
