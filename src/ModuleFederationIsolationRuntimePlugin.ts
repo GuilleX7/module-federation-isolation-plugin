@@ -161,13 +161,6 @@ type ExtendedFederationHost = {
   __webpack_require__: WebpackRequire
 }
 
-type WebpackRequirePatcher = (
-  ownRequire: WebpackRequire,
-  originalOriginRequire: WebpackRequire,
-  isolationNamespace: string,
-  log: (verbosity: RuntimeVerbosity, message: string) => void
-) => WebpackRequire
-
 function initiateRuntimeManifestIfPresent(ownRequire: WebpackRequire): void {
   if (!ownRequire.federation.isolation || ownRequire.federation.isolation.initiated) {
     return
@@ -217,56 +210,11 @@ function patchModuleFactory(moduleFactory: WebpackModuleFactory, patchedRequire:
   return (module: WebpackModule, exports: WebpackModule['exports']) => moduleFactory(module, exports, patchedRequire)
 }
 
-function createIsolationRequire(
-  ownRequire: WebpackRequire,
-  originalOriginRequire: WebpackRequire,
-  isolationNamespace: string
-): WebpackRequire {
-  return new Proxy(originalOriginRequire, {
-    apply(_, __, args: [WebpackModuleId]) {
-      let [originModuleId] = args
-      let originRequire = originalOriginRequire
-
-      // If module is a consume shared module, redirect to the real module and host
-      const possibleRedirection = originRequire.federation.isolation.red[originModuleId]
-      if (possibleRedirection?.mid && possibleRedirection?.webpackRequire) {
-        originModuleId = possibleRedirection.mid
-        originRequire = possibleRedirection.webpackRequire
-      }
-
-      const isolatedModuleId: WebpackModuleId = `${isolationNamespace}/${originModuleId}`
-      if (ownRequire.c[isolatedModuleId]) {
-        // Module is already instantiated and copied to the own cache
-        return ownRequire.c[isolatedModuleId].exports
-      }
-
-      if (originRequire.c[isolatedModuleId]) {
-        // Module is still instantiating in the originRequire cache
-        return originRequire.c[isolatedModuleId].exports
-      }
-
-      // Module is not in cache, create a new module instance
-      originRequire.m[isolatedModuleId] = patchModuleFactory(
-        originRequire.m[originModuleId],
-        createIsolationRequire(ownRequire, originRequire, isolationNamespace)
-      )
-      originRequire(isolatedModuleId)
-
-      // Move instantiated module and clean up the origin cache
-      ownRequire.c[isolatedModuleId] = originRequire.c[isolatedModuleId]
-      if (ownRequire !== originRequire) {
-        delete originRequire.c[isolatedModuleId]
-        delete originRequire.m[isolatedModuleId]
-      }
-      return ownRequire.c[isolatedModuleId].exports
-    },
-  })
-}
-
 function createTranslationRequire(
   ownRequire: WebpackRequire,
   originalOriginRequire: WebpackRequire,
   isolationNamespace: string,
+  strategy: RuntimeStateStrategy,
   log: (verbosity: RuntimeVerbosity, message: string) => void
 ): WebpackRequire {
   return new Proxy(originalOriginRequire, {
@@ -283,82 +231,84 @@ function createTranslationRequire(
 
       let ownModuleId: WebpackModuleId | null = null
 
-      const originUniversalModule = originRequire.federation.isolation.midToUid[originModuleId]
+      if (strategy === RuntimeStateStrategy.ReuseOwn) {
+        const originUniversalModule = originRequire.federation.isolation.midToUid[originModuleId]
+        if (originUniversalModule) {
+          const originPackageUniversalId = `${originUniversalModule.pkgName}~${originUniversalModule.pkgVersion}`
+          const originHostName = originRequire.federation.isolation.hostName
 
-      if (originUniversalModule) {
-        const originPackageUniversalId = `${originUniversalModule.pkgName}~${originUniversalModule.pkgVersion}`
-        const originHostName = originRequire.federation.isolation.hostName
+          let ownPackageVersion = ownRequire.federation.isolation.pkgMatch[originHostName]?.[originPackageUniversalId]
+          if (ownPackageVersion === undefined) {
+            ownPackageVersion = null
+            const ownPackageVersions = ownRequire.federation.isolation.pkgVersions[originUniversalModule.pkgName]
+            const originPackageVersions = originRequire.federation.isolation.pkgVersions[originUniversalModule.pkgName]
+            const originPackageVersion = originPackageVersions.find(
+              ([version]) => version === originUniversalModule.pkgVersion
+            )
 
-        let ownPackageVersion = ownRequire.federation.isolation.pkgMatch[originHostName]?.[originPackageUniversalId]
-
-        if (ownPackageVersion === undefined) {
-          ownPackageVersion = null
-          const ownPackageVersions = ownRequire.federation.isolation.pkgVersions[originUniversalModule.pkgName]
-          const originPackageVersions = originRequire.federation.isolation.pkgVersions[originUniversalModule.pkgName]
-          const originPackageVersion = originPackageVersions.find(
-            ([version]) => version === originUniversalModule.pkgVersion
-          )
-
-          // If a compatible module is already loaded, use it
-          const ownPackageVersionCompatibleWithOriginPackage = ownPackageVersions?.find(([version]) => {
-            return originPackageVersion?.[1].every((range) => semverSatisfies(version, range))
-          })
-          if (ownPackageVersionCompatibleWithOriginPackage) {
-            const possibleOwnPackageVersion = ownPackageVersionCompatibleWithOriginPackage[0]
-            const possibleOwnModuleId =
-              ownRequire.federation.isolation.pkg[originUniversalModule.pkgName][possibleOwnPackageVersion][1][
-                originUniversalModule.modulePath
-              ]
-            if (ownRequire.c[possibleOwnModuleId]) {
-              ownPackageVersion = possibleOwnPackageVersion
-              log(
-                RuntimeVerbosity.Debug,
-                `Using package ${ownRequire.federation.isolation.hostName}'s ${originUniversalModule.pkgName}~${ownPackageVersion} for supplying ${originHostName}'s ${originPackageUniversalId}`
-              )
-            }
-          }
-
-          if (ownPackageVersion === null) {
-            // Try to check if origin module could be loaded in place of any own module that is not loaded
-            const compatibleOwnPackageVersion = ownPackageVersions?.find(([_, rangesIn]) => {
-              return rangesIn.every((range) => semverSatisfies(originUniversalModule.pkgVersion, range))
+            // If a compatible module is already loaded, use it
+            const ownPackageVersionCompatibleWithOriginPackage = ownPackageVersions?.find(([version]) => {
+              return originPackageVersion?.[1].every((range) => semverSatisfies(version, range))
             })
-            if (compatibleOwnPackageVersion) {
-              const possibleOwnPackageVersion = compatibleOwnPackageVersion[0]
+            if (ownPackageVersionCompatibleWithOriginPackage) {
+              const possibleOwnPackageVersion = ownPackageVersionCompatibleWithOriginPackage[0]
               const possibleOwnModuleId =
                 ownRequire.federation.isolation.pkg[originUniversalModule.pkgName][possibleOwnPackageVersion][1][
                   originUniversalModule.modulePath
                 ]
-              if (!ownRequire.c[possibleOwnModuleId]) {
+              if (ownRequire.c[possibleOwnModuleId]) {
                 ownPackageVersion = possibleOwnPackageVersion
                 log(
                   RuntimeVerbosity.Debug,
-                  `Storing package ${originHostName}'s ${originPackageUniversalId} in place of ${ownRequire.federation.isolation.hostName}'s ${originUniversalModule.pkgName}~${ownPackageVersion}`
+                  `[${isolationNamespace}] Using ${ownRequire.federation.isolation.hostName}'s ${originUniversalModule.pkgName}~${ownPackageVersion} as ${originHostName}'s ${originPackageUniversalId}`
                 )
               }
             }
+
+            if (ownPackageVersion === null) {
+              // Try to check if origin module could be loaded in place of any own module that is not loaded
+              const compatibleOwnPackageVersion = ownPackageVersions?.find(([_, rangesIn]) => {
+                return rangesIn.every((range) => semverSatisfies(originUniversalModule.pkgVersion, range))
+              })
+              if (compatibleOwnPackageVersion) {
+                const possibleOwnPackageVersion = compatibleOwnPackageVersion[0]
+                const possibleOwnModuleId =
+                  ownRequire.federation.isolation.pkg[originUniversalModule.pkgName][possibleOwnPackageVersion][1][
+                    originUniversalModule.modulePath
+                  ]
+                if (!ownRequire.c[possibleOwnModuleId]) {
+                  ownPackageVersion = possibleOwnPackageVersion
+                  log(
+                    RuntimeVerbosity.Debug,
+                    `[${isolationNamespace}] Storing ${originHostName}'s ${originPackageUniversalId} as ${ownRequire.federation.isolation.hostName}'s ${originUniversalModule.pkgName}~${ownPackageVersion}`
+                  )
+                }
+              }
+            }
+
+            ownRequire.federation.isolation.pkgMatch[originHostName] = {
+              ...(ownRequire.federation.isolation.pkgMatch[originHostName] || {}),
+              [originPackageUniversalId]: ownPackageVersion,
+            }
           }
 
-          ownRequire.federation.isolation.pkgMatch[originHostName] = {
-            ...(ownRequire.federation.isolation.pkgMatch[originHostName] || {}),
-            [originPackageUniversalId]: ownPackageVersion,
+          if (ownPackageVersion !== null) {
+            ownModuleId =
+              ownRequire.federation.isolation.pkg[originUniversalModule.pkgName][ownPackageVersion][1][
+                originUniversalModule.modulePath
+              ] ?? null
           }
         }
-
-        if (ownPackageVersion !== null) {
-          ownModuleId =
-            ownRequire.federation.isolation.pkg[originUniversalModule.pkgName][ownPackageVersion][1][
-              originUniversalModule.modulePath
-            ] ?? null
-        }
-      }
-
-      if (ownModuleId !== null && ownRequire.c[ownModuleId]) {
-        // Module is already instantiated and copied to the own cache
-        return ownRequire.c[ownModuleId].exports
       }
 
       const isolatedModuleId: WebpackModuleId = `${isolationNamespace}/${originModuleId}`
+      ownModuleId = ownModuleId ?? isolatedModuleId
+      log(RuntimeVerbosity.Debug, `[${isolationNamespace}] Translating ${originModuleId} -> ${ownModuleId}`)
+
+      if (ownRequire.c[ownModuleId]) {
+        // Module is already instantiated and copied to the own cache
+        return ownRequire.c[ownModuleId].exports
+      }
 
       if (originRequire.c[isolatedModuleId]) {
         // Module is still instantiating in the originRequire cache
@@ -368,12 +318,11 @@ function createTranslationRequire(
       // Module is not in cache, create a new module instance
       originRequire.m[isolatedModuleId] = patchModuleFactory(
         originRequire.m[originModuleId],
-        createTranslationRequire(ownRequire, originRequire, isolationNamespace, log)
+        createTranslationRequire(ownRequire, originRequire, isolationNamespace, strategy, log)
       )
       originRequire(isolatedModuleId)
 
       // Move instantiated module and clean up the origin cache
-      ownModuleId = ownModuleId ?? isolatedModuleId
       ownRequire.c[ownModuleId] = originRequire.c[isolatedModuleId]
       if (ownRequire !== originRequire || ownModuleId !== isolatedModuleId) {
         delete originRequire.c[isolatedModuleId]
@@ -385,6 +334,16 @@ function createTranslationRequire(
 }
 
 export function createMfiRuntimePlugin(options: RuntimePluginOptions): () => FederationRuntimePlugin {
+  const log: (verbosity: RuntimeVerbosity, ...data: unknown[]) => void = (
+    verbosity: RuntimeVerbosity,
+    ...data: unknown[]
+  ) => {
+    if (options.runtimeVerbosity >= verbosity) {
+      const logFunction = verbosity === RuntimeVerbosity.Debug ? console.debug : console.warn
+      logFunction(...data)
+    }
+  }
+
   return function plugin(): FederationRuntimePlugin {
     const ownRequire = __webpack_require__
     let moduleToHandlerMapping: Record<WebpackModuleId, FederationRuntimeModuleToHandlerMapping> = {}
@@ -400,13 +359,6 @@ export function createMfiRuntimePlugin(options: RuntimePluginOptions): () => Fed
       },
     })
 
-    const log = (verbosity: RuntimeVerbosity, message: string) => {
-      if (options.runtimeVerbosity >= verbosity) {
-        const logFunction = verbosity === RuntimeVerbosity.Debug ? console.debug : console.warn
-        logFunction(`[${PLUGIN_NAME}] ${message}`)
-      }
-    }
-
     return {
       name: 'ModuleFederationIsolationRuntimePlugin',
       version: '0.0.1',
@@ -418,7 +370,7 @@ export function createMfiRuntimePlugin(options: RuntimePluginOptions): () => Fed
         } else if (ownHost.__webpack_require__ !== ownRequire) {
           log(
             RuntimeVerbosity.Warnings,
-            `The __webpack_require__ function of the host ${ownHost.name} is already set. This may lead to unexpected behavior.`
+            `[mfi/${ownHost.name}] The __webpack_require__ function of the host ${ownHost.name} is already set. This may lead to unexpected behavior.`
           )
         }
         // Save the host name in the manifest
@@ -476,6 +428,10 @@ export function createMfiRuntimePlugin(options: RuntimePluginOptions): () => Fed
               // Mark the original factory as loaded
               resolvedDependency.lib = originalFactory
               resolvedDependency.loaded = true
+              log(
+                RuntimeVerbosity.Debug,
+                `[mfi/${ownRequire.federation.isolation.hostName}] Loaded original factory for ${pkgName}@${pkgVersion} from ${resolvedDependency.from}`
+              )
               return originalFactory
             })
             .then((originalFactory) => {
@@ -484,17 +440,26 @@ export function createMfiRuntimePlugin(options: RuntimePluginOptions): () => Fed
               ) as ExtendedFederationHost
 
               if (!originHost) {
-                log(RuntimeVerbosity.Warnings, `Could not find host named ${resolvedDependency.from}`)
+                log(
+                  RuntimeVerbosity.Warnings,
+                  `[mfi/${ownRequire.federation.isolation.hostName}] Could not find host named ${resolvedDependency.from}`
+                )
                 return originalFactory
               } else if (!originHost.__webpack_require__) {
-                log(RuntimeVerbosity.Warnings, `Host ${resolvedDependency.from} is not using ${PLUGIN_NAME}`)
+                log(
+                  RuntimeVerbosity.Warnings,
+                  `[mfi/${ownRequire.federation.isolation.hostName}] Host ${resolvedDependency.from} is not using ${PLUGIN_NAME}`
+                )
                 return originalFactory
               }
 
               // Retrieve shared consume module ID from scope
               const scopeMfiMarkIndex = args.scope.indexOf('/mfi/scope/')
               if (scopeMfiMarkIndex === -1) {
-                log(RuntimeVerbosity.Warnings, `Could not find MFI scope mark in scope '${args.scope}'`)
+                log(
+                  RuntimeVerbosity.Warnings,
+                  `[mfi/${ownRequire.federation.isolation.hostName}] Could not find MFI scope mark in scope '${args.scope}'`
+                )
                 return originalFactory
               }
 
@@ -513,11 +478,18 @@ export function createMfiRuntimePlugin(options: RuntimePluginOptions): () => Fed
               }
 
               if (originModuleId === undefined) {
-                log(RuntimeVerbosity.Warnings, `Could not find module ID for ${ownConsumeSharedModuleId}`)
+                log(
+                  RuntimeVerbosity.Warnings,
+                  `[mfi/${ownRequire.federation.isolation.hostName}] Could not find module ID for ${ownConsumeSharedModuleId}`
+                )
                 return originalFactory
               }
 
               // Save the redirection in the own require cache
+              log(
+                RuntimeVerbosity.Debug,
+                `[mfi/${ownRequire.federation.isolation.hostName}] Setting redirection ${ownConsumeSharedModuleId} -> ${originModuleId}`
+              )
               ownRequire.federation.isolation.red[ownConsumeSharedModuleId] = {
                 mid: originModuleId,
                 webpackRequire: originRequire,
@@ -527,16 +499,14 @@ export function createMfiRuntimePlugin(options: RuntimePluginOptions): () => Fed
                 return originalFactory
               }
 
-              const createPatchedRequire: WebpackRequirePatcher =
-                stateStrategy === RuntimeStateStrategy.Isolate ? createIsolationRequire : createTranslationRequire
-
-              const patchedRequire = createPatchedRequire(
+              const patchedRequire = createTranslationRequire(
                 ownRequire,
                 originRequire,
                 `mfi/${ownRequire.federation.isolation.hostName}/${pkgName}/${pkgVersion}`,
+                stateStrategy,
                 log
               )
-              return () => patchedRequire(originModuleId)
+              return () => patchedRequire(originModuleId as WebpackModuleId)
             }),
         })
 
